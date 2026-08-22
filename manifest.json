@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-ai-notebook",
+  "name": "Obsidian AI Notebook",
+  "version": "0.1.0",
+  "minAppVersion": "1.0.0",
+  "description": "NotebookLM-style AI Notebook workspace for Obsidian with local CLI Agent support (Antigravity / Claude Code).",
+  "author": "Antigravity",
+  "authorUrl": "https://github.com",
+  "isDesktopOnly": true
+}

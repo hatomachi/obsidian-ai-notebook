@@ -1,0 +1,97 @@
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+
+export const execAsync = promisify(exec);
+
+export interface AgentOptions {
+    contextDir: string;  // sources/ の絶対パス
+    outputDir: string;   // artifacts/ の絶対パス
+    commandPath: string; // 実行パス (agy, claude, etc.)
+}
+
+export interface AgentResult {
+    text: string;
+    artifactsCreated?: string[];
+}
+
+export interface AIAgentAdapter {
+    id: string;
+    name: string;
+    executePrompt(prompt: string, options: AgentOptions): Promise<AgentResult>;
+}
+
+/**
+ * 拡張 PATH 環境変数を生成
+ */
+export function getExtendedEnv(): NodeJS.ProcessEnv {
+    const home = os.homedir();
+    const extraPaths = [
+        path.join(home, '.local', 'bin'),
+        path.join(home, '.antigravity', 'bin'),
+        path.join(home, '.gemini', 'antigravity', 'bin'),
+        '/usr/local/bin',
+        '/opt/homebrew/bin',
+        '/usr/bin',
+        '/bin'
+    ];
+
+    const currentPath = process.env.PATH || '';
+    const combinedPath = extraPaths.concat(currentPath.split(':')).filter(Boolean);
+    const uniquePath = Array.from(new Set(combinedPath)).join(':');
+
+    return {
+        ...process.env,
+        PATH: uniquePath
+    };
+}
+
+/**
+ * コマンド名から実際の実行パスを解決（agy / antigravity の相互フォールバック対応）
+ */
+export function resolveCommandPath(command: string): string {
+    if (path.isAbsolute(command)) {
+        return command;
+    }
+
+    const candidates = [command];
+    if (command === 'antigravity' || command === 'agy') {
+        candidates.push('agy', 'antigravity');
+    }
+    const uniqueCandidates = Array.from(new Set(candidates));
+
+    const home = os.homedir();
+    const searchDirs = [
+        path.join(home, '.local', 'bin'),
+        path.join(home, '.antigravity', 'bin'),
+        path.join(home, '.gemini', 'antigravity', 'bin'),
+        '/usr/local/bin',
+        '/opt/homebrew/bin',
+        '/usr/bin',
+        '/bin'
+    ];
+
+    for (const cand of uniqueCandidates) {
+        for (const dir of searchDirs) {
+            const fullPath = path.join(dir, cand);
+            if (fs.existsSync(fullPath)) {
+                return fullPath;
+            }
+        }
+    }
+
+    return command;
+}
+
+/**
+ * プロンプトエスケープ
+ */
+export function escapePrompt(promptText: string): string {
+    return promptText
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"')
+        .replace(/\$/g, '\\$')
+        .replace(/`/g, '\\`');
+}
