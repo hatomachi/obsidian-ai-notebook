@@ -1,3 +1,21 @@
+export interface SystemKnowledge {
+    id: string;
+    name: string;
+    path: string; // Relative path in Obsidian vault
+    description: string;
+    tags: string[];
+    content?: string;
+}
+
+export interface DocumentTemplate {
+    id: string;
+    title: string;
+    path: string; // Relative path in Obsidian vault
+    description: string;
+    tags: string[];
+    content?: string;
+}
+
 export interface NotebookMetadata {
     id: string;
     title: string;
@@ -6,6 +24,8 @@ export interface NotebookMetadata {
     tags: string[];
     icon: string;
     description: string;
+    systemId?: string;
+    templateId?: string;
 }
 
 export interface NotebookSource {

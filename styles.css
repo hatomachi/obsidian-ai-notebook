@@ -587,3 +587,112 @@
     background-color: var(--background-modifier-error-hover);
 }
 
+/* Header Context Selectors */
+.ai-notebook-header-selectors {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.ai-notebook-selector-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background-color: var(--background-primary);
+    padding: 4px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--background-modifier-border);
+}
+
+.ai-notebook-selector-icon {
+    display: flex;
+    align-items: center;
+    color: var(--interactive-accent);
+}
+
+.ai-notebook-selector-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.ai-notebook-header-select {
+    background-color: transparent;
+    border: none;
+    color: var(--text-normal);
+    font-size: 0.85rem;
+    font-weight: 500;
+    outline: none;
+    cursor: pointer;
+}
+
+.ai-notebook-btn-icon-link {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--text-muted);
+    padding: 2px;
+    display: flex;
+    align-items: center;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+}
+
+.ai-notebook-btn-icon-link:hover {
+    color: var(--interactive-accent);
+    background-color: var(--background-modifier-hover);
+}
+
+/* Chat Quick Actions Bar */
+.ai-notebook-chat-actions-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 24px;
+    background-color: var(--background-secondary-alt);
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.ai-notebook-btn-sm {
+    padding: 4px 12px;
+    font-size: 0.82rem;
+    border-radius: 6px;
+}
+
+/* Gallery Card Badges */
+.ai-notebook-card-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: auto;
+    margin-bottom: 8px;
+}
+
+.ai-notebook-tag-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.ai-notebook-tag-system {
+    background-color: rgba(var(--interactive-accent-rgb), 0.12);
+    color: var(--interactive-accent);
+    border: 1px solid rgba(var(--interactive-accent-rgb), 0.25);
+}
+
+.ai-notebook-tag-template {
+    background-color: var(--background-modifier-hover);
+    color: var(--text-normal);
+    border: 1px solid var(--background-modifier-border);
+}
+
+.ai-notebook-tag-icon {
+    display: flex;
+    align-items: center;
+}
+
+

@@ -13,19 +13,35 @@ export class ClaudeCodeAdapter implements AIAgentAdapter {
 
         console.log(`[ClaudeCodeAdapter] Executing agent with command: "${command}", resolved path: "${exePath}"`);
 
-        let systemContext = `あなたはNotebookLMのようなコンテキスト駆動AIアシスタントです。\n`;
+        let systemContext = `あなたは高品質な技術・業務ドキュメントの作成およびレビューを支援するエキスパートAIアシスタントです。\n`;
         systemContext += `作業コンテキストフォルダ: "${options.contextDir}"\n\n`;
 
+        // 1. ドメイン・システム知識
+        if (options.systemKnowledgeContent) {
+            systemContext += `【ドメイン・システム知識 (${options.systemKnowledgeName || 'システム仕様'})】\n`;
+            systemContext += `以下はこのシステムに関する恒久的な仕様、アーキテクチャ、過去のトラブル教訓、運用上の注意点です。ドキュメント作成時はこれらを必ず踏まえてください。\n`;
+            systemContext += `--- 開始: システム知識 ---\n${options.systemKnowledgeContent}\n--- 終了: システム知識 ---\n\n`;
+        }
+
+        // 2. ドキュメントフォーマット・テンプレート
+        if (options.templateContent) {
+            systemContext += `【ドキュメントフォーマット・作成基準 (${options.templateTitle || '指定テンプレート'})】\n`;
+            systemContext += `以下のフォーマット・章立て・記述基準に厳格に準拠してドキュメントを作成・更新してください。\n`;
+            systemContext += `--- 開始: テンプレート ---\n${options.templateContent}\n--- 終了: テンプレート ---\n\n`;
+        }
+
+        // 3. contextDir 内のソースファイルを走査
         if (fs.existsSync(options.contextDir)) {
             const files = fs.readdirSync(options.contextDir);
             if (files.length > 0) {
-                systemContext += `【インプットソースファイルの内容】\n`;
+                systemContext += `【インプットソースファイル（今回の個別情報・変更点・議事録など）】\n`;
                 for (const file of files) {
                     const filePath = path.join(options.contextDir, file);
                     try {
                         const stat = fs.statSync(filePath);
                         if (stat.isFile()) {
                             const ext = path.extname(file).toLowerCase();
+                            // テキスト形式のファイルを読み込んで直接埋め込む
                             if (['.txt', '.md', '.json', '.csv', '.js', '.ts', '.html', '.css', '.py', '.yaml', '.yml'].includes(ext)) {
                                 const content = fs.readFileSync(filePath, 'utf-8');
                                 systemContext += `--- ファイル: ${file} ---\n${content.slice(0, 20000)}\n\n`;
@@ -43,7 +59,8 @@ export class ClaudeCodeAdapter implements AIAgentAdapter {
         }
 
         systemContext += `【ユーザーの質問・指示】\n${userPrompt}\n\n`;
-        systemContext += `丁寧かつ明瞭に回答してください。成果物を作成する場合は \`\`\`markdown:成果物タイトル.md の形式でファイル内容を出力してください。`;
+        systemContext += `丁寧かつ明瞭に回答してください。成果物（リリース計画書・レポート・要約・設計メモ等）を作成または修正する場合は、以下のように \`\`\`markdown:成果物タイトル.md の形式でファイル内容をコードブロックとして出力してください。\n`;
+        systemContext += `※テンプレートが指定されている場合は、テンプレートの全セクション・章立てを網羅し、ドメイン知識の注意事項やインプットソースの情報を反映した完成度の高いMarkdownを出力してください。`;
 
         const escapedPrompt = escapePrompt(systemContext);
         const cmd = `"${exePath}" -p "${escapedPrompt}"`;

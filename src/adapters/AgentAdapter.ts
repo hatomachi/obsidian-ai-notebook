@@ -10,6 +10,10 @@ export interface AgentOptions {
     contextDir: string;  // sources/ の絶対パス
     outputDir: string;   // artifacts/ の絶対パス
     commandPath: string; // 実行パス (agy, claude, etc.)
+    systemKnowledgeName?: string;
+    systemKnowledgeContent?: string;
+    templateTitle?: string;
+    templateContent?: string;
 }
 
 export interface AgentResult {
