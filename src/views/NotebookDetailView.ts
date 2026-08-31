@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, setIcon, TFile, Notice, FileSystemAdapter } from 'obsidian';
+import { ItemView, WorkspaceLeaf, setIcon, TFile, Notice, FileSystemAdapter, MarkdownRenderer } from 'obsidian';
 import type AINotebookPlugin from '../main';
 import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage } from '../types';
 import { ArtifactModal } from './modals/ArtifactModal';
@@ -319,22 +319,7 @@ export class AINotebookDetailView extends ItemView {
 
         // メッセージ履歴
         const messagesEl = panel.createDiv({ cls: 'ai-notebook-chat-messages' });
-        if (this.chatHistory.length === 0) {
-            const emptyEl = messagesEl.createDiv({ cls: 'ai-notebook-chat-placeholder' });
-            setIcon(emptyEl.createDiv({ cls: 'ai-notebook-chat-placeholder-icon' }), 'bot');
-            const placeholderText = this.linkedNotebooks.length > 0
-                ? `${this.linkedNotebooks.length} 件のナレッジノートがコンテキストとしてリンクされています。上のボタンからドラフト生成するか、チャットで対話してください。`
-                : 'インプットソースや参照コンテキストをもとに、AIエージェントに何でも質問・指示してください。';
-            emptyEl.createDiv({ text: placeholderText, cls: 'ai-notebook-chat-placeholder-text' });
-        } else {
-            for (const msg of this.chatHistory) {
-                const msgBubble = messagesEl.createDiv({
-                    cls: `ai-notebook-chat-message ai-notebook-chat-message-${msg.sender}`
-                });
-                msgBubble.createDiv({ text: msg.text, cls: 'ai-notebook-chat-text' });
-            }
-            messagesEl.scrollTop = messagesEl.scrollHeight;
-        }
+        this.renderMessages(messagesEl);
 
         // 入力フォーム
         const inputArea = panel.createDiv({ cls: 'ai-notebook-chat-input-area' });
@@ -369,6 +354,68 @@ export class AINotebookDetailView extends ItemView {
                 }
             }
         };
+    }
+
+    /**
+     * チャットメッセージ履歴のレンダリング (MarkdownRenderer & コピー機能)
+     */
+    private async renderMessages(messagesEl: HTMLElement): Promise<void> {
+        messagesEl.empty();
+
+        if (this.chatHistory.length === 0) {
+            const emptyEl = messagesEl.createDiv({ cls: 'ai-notebook-chat-placeholder' });
+            setIcon(emptyEl.createDiv({ cls: 'ai-notebook-chat-placeholder-icon' }), 'bot');
+            const placeholderText = this.linkedNotebooks.length > 0
+                ? `${this.linkedNotebooks.length} 件のナレッジノートがコンテキストとしてリンクされています。上のボタンからドラフト生成するか、チャットで対話してください。`
+                : 'インプットソースや参照コンテキストをもとに、AIエージェントに何でも質問・指示してください。';
+            emptyEl.createDiv({ text: placeholderText, cls: 'ai-notebook-chat-placeholder-text' });
+            return;
+        }
+
+        for (const msg of this.chatHistory) {
+            const isUser = msg.sender === 'user';
+            const msgWrapper = messagesEl.createDiv({
+                cls: `ai-notebook-chat-message-wrapper ai-notebook-chat-message-wrapper-${msg.sender}`
+            });
+
+            // メッセージヘッダー（送信者名 + コピーボタン）
+            const headerEl = msgWrapper.createDiv({ cls: 'ai-notebook-chat-msg-header' });
+            const senderName = isUser 
+                ? 'あなた' 
+                : (this.plugin.settings.activeAgent === 'antigravity' ? 'AI (Antigravity)' : 'AI (Claude)');
+            headerEl.createSpan({ text: senderName, cls: 'ai-notebook-chat-sender-name' });
+
+            const copyBtn = headerEl.createEl('button', {
+                cls: 'ai-notebook-chat-copy-btn'
+            });
+            setIcon(copyBtn, 'copy');
+            copyBtn.createSpan({ text: ' コピー' });
+            copyBtn.setAttribute('title', 'メッセージをコピー');
+            copyBtn.onclick = async (e) => {
+                e.stopPropagation();
+                await navigator.clipboard.writeText(msg.text);
+                new Notice('クリップボードにコピーしました');
+            };
+
+            // メッセージバブル
+            const msgBubble = msgWrapper.createDiv({
+                cls: `ai-notebook-chat-message ai-notebook-chat-message-${msg.sender}`
+            });
+            const textContainer = msgBubble.createDiv({
+                cls: 'ai-notebook-chat-text markdown-rendered'
+            });
+
+            if (!isUser && msg.text.startsWith('思考中...')) {
+                const loadingDiv = textContainer.createDiv({ cls: 'ai-notebook-chat-loading' });
+                const spinner = loadingDiv.createSpan({ cls: 'ai-notebook-chat-spinner' });
+                setIcon(spinner, 'loader');
+                loadingDiv.createSpan({ text: ` ${msg.text}` });
+            } else {
+                await MarkdownRenderer.render(this.app, msg.text, textContainer, '', this);
+            }
+        }
+
+        messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
     /**
