@@ -21,11 +21,10 @@ export class ClaudeCodeAdapter implements AIAgentAdapter {
         // プロンプト構築
         const prompt = buildDirectEditSystemPrompt(userPrompt, options);
 
-        // CLI 引数の構築 (--permission-mode acceptEdits, --max-turns)
+        // CLI 引数の構築 (-p, --dangerously-skip-permissions)
         const args = [
             '-p', prompt,
-            '--permission-mode', 'acceptEdits',
-            '--max-turns', String(options.maxTurns || 15)
+            '--dangerously-skip-permissions'
         ];
 
         try {

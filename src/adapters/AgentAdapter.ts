@@ -207,6 +207,9 @@ export function runSpawnAgent(
             shell: false
         });
 
+        // 対話型入力待ちによるハング防止のため、stdin を即時クローズ
+        child.stdin?.end();
+
         let stdoutBuffer = '';
         let stderrBuffer = '';
 
