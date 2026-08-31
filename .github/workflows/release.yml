@@ -2,6 +2,8 @@ name: Release Obsidian Plugin
 
 on:
   push:
+    branches:
+      - main
     tags:
       - '*'
   workflow_dispatch:
@@ -15,12 +17,14 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-and-release:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -31,23 +35,29 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run tests
+        run: npm test
+
       - name: Build plugin
         run: npm run build
 
       - name: Determine Tag / Release Name
         id: tag_info
         run: |
+          VERSION=$(node -p "require('./manifest.json').version")
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag_name }}" ]; then
             TAG_NAME="${{ github.event.inputs.tag_name }}"
-          elif [ "${{ github.event_name }}" = "push" ]; then
+          elif [ "${{ github.event_name }}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG_NAME="${GITHUB_REF#refs/tags/}"
           else
-            # fallback for workflow_dispatch with empty tag_name
-            TAG_NAME="v$(node -p "require('./manifest.json').version")"
+            # Default to manifest version (e.g. 0.1.0 or v0.1.0)
+            TAG_NAME="${VERSION}"
           fi
           echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Determined Tag: ${TAG_NAME}"
 
-      - name: Create GitHub Release
+      - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag_info.outputs.tag_name }}
@@ -55,7 +65,10 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+          make_latest: true
           files: |
             main.js
             manifest.json
             styles.css
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

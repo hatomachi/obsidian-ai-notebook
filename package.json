@@ -1,6 +1,6 @@
 {
   "name": "obsidian-ai-notebook",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "NotebookLM-style AI Notebook plugin for Obsidian",
   "main": "main.js",
   "scripts": {
