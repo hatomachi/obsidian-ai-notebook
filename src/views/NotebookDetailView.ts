@@ -1,8 +1,8 @@
 import { ItemView, WorkspaceLeaf, setIcon, TFile, Notice, FileSystemAdapter } from 'obsidian';
 import type AINotebookPlugin from '../main';
-import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, SystemKnowledge, DocumentTemplate } from '../types';
+import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage } from '../types';
 import { ArtifactModal } from './modals/ArtifactModal';
-import { KnowledgeModal } from './modals/KnowledgeModal';
+import { LinkNotebookModal } from './modals/LinkNotebookModal';
 import { AgentFactory } from '../adapters/AgentFactory';
 import * as path from 'path';
 
@@ -15,9 +15,8 @@ export class AINotebookDetailView extends ItemView {
 
     sources: NotebookSource[] = [];
     artifacts: NotebookArtifact[] = [];
+    linkedNotebooks: NotebookMetadata[] = [];
     chatHistory: ChatMessage[] = [];
-    systems: SystemKnowledge[] = [];
-    templates: DocumentTemplate[] = [];
 
     onBackToGalleryHandler?: () => void;
     onSendMessageHandler?: (prompt: string) => Promise<void>;
@@ -60,8 +59,18 @@ export class AINotebookDetailView extends ItemView {
         this.metadata = await this.plugin.notebookManager.getNotebookMetadata(this.notebookId);
         this.sources = await this.plugin.notebookManager.getSources(this.notebookId);
         this.artifacts = await this.plugin.notebookManager.getArtifacts(this.notebookId);
-        this.systems = await this.plugin.notebookManager.getAllSystems();
-        this.templates = await this.plugin.notebookManager.getAllTemplates();
+
+        // リンクされた参照ノートブックのメタデータをロード
+        this.linkedNotebooks = [];
+        if (this.metadata?.linkedNotebookIds && this.metadata.linkedNotebookIds.length > 0) {
+            for (const linkedId of this.metadata.linkedNotebookIds) {
+                const linkedMeta = await this.plugin.notebookManager.getNotebookMetadata(linkedId);
+                if (linkedMeta) {
+                    this.linkedNotebooks.push(linkedMeta);
+                }
+            }
+        }
+
         if (reloadFromDisk) {
             this.chatHistory = await this.plugin.notebookManager.getChatHistory(this.notebookId);
         }
@@ -79,7 +88,7 @@ export class AINotebookDetailView extends ItemView {
             return;
         }
 
-        // 1. トップナビゲーションバー
+        // 1. トップナビゲーションバー（クリーン & シンプル）
         const header = container.createDiv({ cls: 'ai-notebook-detail-header' });
         
         const backBtn = header.createEl('button', { cls: 'ai-notebook-btn ai-notebook-btn-secondary' });
@@ -92,92 +101,12 @@ export class AINotebookDetailView extends ItemView {
         };
 
         const titleArea = header.createDiv({ cls: 'ai-notebook-detail-title-area' });
+        const iconSpan = titleArea.createSpan({ cls: 'ai-notebook-detail-title-icon' });
+        setIcon(iconSpan, this.metadata.icon || 'book-open');
         titleArea.createEl('h2', { text: this.metadata.title, cls: 'ai-notebook-detail-title' });
 
-        // コンテキストセレクター群（システム・テンプレート）
-        const selectorsArea = header.createDiv({ cls: 'ai-notebook-header-selectors' });
-
-        // --- システムセレクター ---
-        const systemGroup = selectorsArea.createDiv({ cls: 'ai-notebook-selector-group' });
-        const systemIcon = systemGroup.createSpan({ cls: 'ai-notebook-selector-icon' });
-        setIcon(systemIcon, 'cpu');
-        systemGroup.createSpan({ text: 'システム: ', cls: 'ai-notebook-selector-label' });
-        
-        const systemSelect = systemGroup.createEl('select', { cls: 'ai-notebook-header-select' });
-        const emptySysOpt = systemSelect.createEl('option', { value: '', text: 'なし（汎用）' });
-        if (!this.metadata.systemId) emptySysOpt.selected = true;
-
-        for (const sys of this.systems) {
-            const opt = systemSelect.createEl('option', { value: sys.id, text: sys.name });
-            if (this.metadata.systemId === sys.id) opt.selected = true;
-        }
-
-        systemSelect.onchange = async () => {
-            if (!this.notebookId) return;
-            const newSysId = systemSelect.value;
-            await this.plugin.notebookManager.updateNotebookMetadata(this.notebookId, { systemId: newSysId || undefined });
-            new Notice('対象システムを更新しました');
-            await this.refresh(false);
-        };
-
-        if (this.metadata.systemId) {
-            const editSysBtn = systemGroup.createEl('button', { cls: 'ai-notebook-btn-icon-link' });
-            setIcon(editSysBtn, 'edit');
-            editSysBtn.setAttribute('title', 'システムナレッジを確認・編集');
-            editSysBtn.onclick = () => {
-                const sys = this.systems.find(s => s.id === this.metadata?.systemId);
-                if (sys) {
-                    const file = this.app.vault.getAbstractFileByPath(sys.path);
-                    if (file instanceof TFile) {
-                        new KnowledgeModal(this.app, file, `システム知識: ${sys.name}`, async () => {
-                            await this.refresh(false);
-                        }).open();
-                    }
-                }
-            };
-        }
-
-        // --- テンプレートセレクター ---
-        const templateGroup = selectorsArea.createDiv({ cls: 'ai-notebook-selector-group' });
-        const templateIcon = templateGroup.createSpan({ cls: 'ai-notebook-selector-icon' });
-        setIcon(templateIcon, 'file-text');
-        templateGroup.createSpan({ text: 'フォーマット: ', cls: 'ai-notebook-selector-label' });
-
-        const templateSelect = templateGroup.createEl('select', { cls: 'ai-notebook-header-select' });
-        const emptyTplOpt = templateSelect.createEl('option', { value: '', text: 'なし（対話）' });
-        if (!this.metadata.templateId) emptyTplOpt.selected = true;
-
-        for (const tpl of this.templates) {
-            const opt = templateSelect.createEl('option', { value: tpl.id, text: tpl.title });
-            if (this.metadata.templateId === tpl.id) opt.selected = true;
-        }
-
-        templateSelect.onchange = async () => {
-            if (!this.notebookId) return;
-            const newTplId = templateSelect.value;
-            await this.plugin.notebookManager.updateNotebookMetadata(this.notebookId, { templateId: newTplId || undefined });
-            new Notice('テンプレートを更新しました');
-            await this.refresh(false);
-        };
-
-        if (this.metadata.templateId) {
-            const editTplBtn = templateGroup.createEl('button', { cls: 'ai-notebook-btn-icon-link' });
-            setIcon(editTplBtn, 'edit');
-            editTplBtn.setAttribute('title', 'テンプレート定義を確認・編集');
-            editTplBtn.onclick = () => {
-                const tpl = this.templates.find(t => t.id === this.metadata?.templateId);
-                if (tpl) {
-                    const file = this.app.vault.getAbstractFileByPath(tpl.path);
-                    if (file instanceof TFile) {
-                        new KnowledgeModal(this.app, file, `テンプレート: ${tpl.title}`, async () => {
-                            await this.refresh(false);
-                        }).open();
-                    }
-                }
-            };
-        }
-
-        const agentBadge = header.createDiv({ cls: 'ai-notebook-agent-badge' });
+        const headerRight = header.createDiv({ cls: 'ai-notebook-header-right' });
+        const agentBadge = headerRight.createDiv({ cls: 'ai-notebook-agent-badge' });
         setIcon(agentBadge, 'bot');
         const agentName = this.plugin.settings.activeAgent === 'antigravity' ? 'Antigravity CLI' : 'Claude Code CLI';
         agentBadge.createSpan({ text: ` ${agentName}` });
@@ -185,9 +114,9 @@ export class AINotebookDetailView extends ItemView {
         // 2. 3カラムボディレイアウト
         const body = container.createDiv({ cls: 'ai-notebook-detail-body' });
 
-        // --- LEFT COLUMN: SOURCE PANEL ---
+        // --- LEFT COLUMN: CONTEXT & SOURCE PANEL ---
         const leftPanel = body.createDiv({ cls: 'ai-notebook-panel ai-notebook-panel-sources' });
-        this.renderSourcePanel(leftPanel);
+        this.renderContextAndSourcePanel(leftPanel);
 
         // --- CENTER COLUMN: CHAT PANEL ---
         const centerPanel = body.createDiv({ cls: 'ai-notebook-panel ai-notebook-panel-chat' });
@@ -199,18 +128,89 @@ export class AINotebookDetailView extends ItemView {
     }
 
     /**
-     * ソースパネルのレンダリング（D&Dエリア ＋ ソース一覧）
+     * コンテキスト & ソースパネルのレンダリング
+     * （🔗 参照ノートブック ＋ 📂 直接投入ファイル）
      */
-    private renderSourcePanel(panel: HTMLElement): void {
+    private renderContextAndSourcePanel(panel: HTMLElement): void {
         panel.empty();
 
-        const panelHeader = panel.createDiv({ cls: 'ai-notebook-panel-header' });
-        panelHeader.createEl('h3', { text: 'ソース (Inputs)' });
+        // ==========================================
+        // 1. 参照ノートブック (Linked Context)
+        // ==========================================
+        const linkedSection = panel.createDiv({ cls: 'ai-notebook-context-section' });
+        const linkedHeader = linkedSection.createDiv({ cls: 'ai-notebook-panel-header' });
         
-        const countBadge = panelHeader.createSpan({ text: `${this.sources.length}`, cls: 'ai-notebook-count-badge' });
+        const linkedTitle = linkedHeader.createEl('h3', { text: '🔗 参照コンテキスト' });
+        linkedTitle.setAttribute('title', '仕様書、フォーマットルール、良質サンプルなどのナレッジノート');
+        linkedHeader.createSpan({ text: `${this.linkedNotebooks.length}`, cls: 'ai-notebook-count-badge' });
+
+        const addLinkBtn = linkedHeader.createEl('button', {
+            cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-xs',
+            text: '+ 参照追加'
+        });
+        addLinkBtn.onclick = () => {
+            if (!this.notebookId || !this.metadata) return;
+            new LinkNotebookModal(
+                this.app,
+                this.plugin.notebookManager,
+                this.notebookId,
+                this.metadata.linkedNotebookIds || [],
+                async (selectedIds) => {
+                    if (!this.notebookId) return;
+                    await this.plugin.notebookManager.updateNotebookMetadata(this.notebookId, {
+                        linkedNotebookIds: selectedIds
+                    });
+                    new Notice('参照コンテキストを更新しました');
+                    await this.refresh(false);
+                }
+            ).open();
+        };
+
+        const linkedList = linkedSection.createDiv({ cls: 'ai-notebook-linked-list' });
+        if (this.linkedNotebooks.length === 0) {
+            const emptyEl = linkedList.createDiv({ cls: 'ai-notebook-empty-linked' });
+            emptyEl.createDiv({ text: '参照中のナレッジノートはありません', cls: 'ai-notebook-empty-text' });
+            const tipEl = emptyEl.createDiv({ text: '「+ 参照追加」から仕様やフォーマットルールを接続できます', cls: 'ai-notebook-hint-text' });
+        } else {
+            for (const nb of this.linkedNotebooks) {
+                const item = linkedList.createDiv({ cls: 'ai-notebook-linked-item' });
+                
+                const icon = item.createSpan({ cls: 'ai-notebook-linked-icon' });
+                setIcon(icon, nb.icon || 'book-open');
+
+                const nameWrap = item.createDiv({ cls: 'ai-notebook-linked-name-wrap' });
+                const nameLink = nameWrap.createSpan({ text: nb.title, cls: 'ai-notebook-linked-name' });
+                nameLink.setAttribute('title', `クリックして「${nb.title}」へジャンプ`);
+                nameLink.onclick = async () => {
+                    await this.setNotebookId(nb.id);
+                };
+
+                const removeBtn = item.createEl('button', { cls: 'ai-notebook-item-delete-btn' });
+                setIcon(removeBtn, 'x');
+                removeBtn.setAttribute('title', '参照リンクを解除');
+                removeBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    if (!this.notebookId || !this.metadata) return;
+                    const nextIds = (this.metadata.linkedNotebookIds || []).filter(id => id !== nb.id);
+                    await this.plugin.notebookManager.updateNotebookMetadata(this.notebookId, {
+                        linkedNotebookIds: nextIds
+                    });
+                    new Notice(`「${nb.title}」の参照を解除しました`);
+                    await this.refresh(false);
+                };
+            }
+        }
+
+        // ==========================================
+        // 2. 直接投入ファイル (Direct Inputs)
+        // ==========================================
+        const sourceSection = panel.createDiv({ cls: 'ai-notebook-source-section' });
+        const sourceHeader = sourceSection.createDiv({ cls: 'ai-notebook-panel-header' });
+        sourceHeader.createEl('h3', { text: '📂 直接投入ファイル' });
+        sourceHeader.createSpan({ text: `${this.sources.length}`, cls: 'ai-notebook-count-badge' });
 
         // D&D ドロップゾーン
-        const dropZone = panel.createDiv({ cls: 'ai-notebook-dropzone' });
+        const dropZone = sourceSection.createDiv({ cls: 'ai-notebook-dropzone' });
         const dropIcon = dropZone.createDiv({ cls: 'ai-notebook-dropzone-icon' });
         setIcon(dropIcon, 'upload-cloud');
         dropZone.createDiv({ text: 'ファイルをドロップ または 選択', cls: 'ai-notebook-dropzone-label' });
@@ -228,7 +228,6 @@ export class AINotebookDetailView extends ItemView {
             }
         };
 
-        // ドラッグ＆ドロップ イベントハンドラー
         dropZone.ondragover = (e) => {
             e.preventDefault();
             dropZone.addClass('is-dragover');
@@ -245,9 +244,9 @@ export class AINotebookDetailView extends ItemView {
         };
 
         // ソース一覧リスト
-        const sourceList = panel.createDiv({ cls: 'ai-notebook-source-list' });
+        const sourceList = sourceSection.createDiv({ cls: 'ai-notebook-source-list' });
         if (this.sources.length === 0) {
-            sourceList.createDiv({ text: 'ソースファイルがありません', cls: 'ai-notebook-empty-text' });
+            sourceList.createDiv({ text: '直接投入ファイルはありません', cls: 'ai-notebook-empty-text' });
         } else {
             for (const src of this.sources) {
                 const item = sourceList.createDiv({ cls: 'ai-notebook-source-item' });
@@ -296,27 +295,25 @@ export class AINotebookDetailView extends ItemView {
         const panelHeader = panel.createDiv({ cls: 'ai-notebook-panel-header' });
         panelHeader.createEl('h3', { text: 'AI チャット' });
 
-        // クイックアクションバー（テンプレート・システムに応じたワンクリック生成）
+        // クイックアクションバー
         const actionsBar = panel.createDiv({ cls: 'ai-notebook-chat-actions-bar' });
         
-        const currentTemplate = this.templates.find(t => t.id === this.metadata?.templateId);
-        const currentSystem = this.systems.find(s => s.id === this.metadata?.systemId);
-
-        if (currentTemplate) {
+        if (this.linkedNotebooks.length > 0) {
             const draftBtn = actionsBar.createEl('button', { cls: 'ai-notebook-btn ai-notebook-btn-primary ai-notebook-btn-sm' });
             setIcon(draftBtn, 'sparkles');
-            draftBtn.createSpan({ text: ` 📋 ${currentTemplate.title}をドラフト生成` });
+            const linkedNames = this.linkedNotebooks.map(n => n.title).join(', ');
+            draftBtn.createSpan({ text: ` 🚀 参照コンテキストを踏まえて初稿（ドラフト）を生成` });
+            draftBtn.setAttribute('title', `参照中: ${linkedNames}`);
             draftBtn.onclick = async () => {
-                const targetSystemName = currentSystem ? currentSystem.name : '対象システム';
-                const prompt = `インプットソースの内容と${targetSystemName}のシステム知識をもとに、${currentTemplate.title}の全セクションに準拠した詳細な初稿（ドラフト）を作成してください。注意事項やロールバック基準も具体的に記述してください。`;
+                const prompt = `インプットソースの内容と、リンクされた参照コンテキスト（${linkedNames}）の仕様・ルール・サンプルをもとに、完成度の高い成果物初稿（ドラフト）を作成してください。注意事項や章立て、ロールバック基準も具体的に記述してください。`;
                 await this.handleSendMessage(prompt);
             };
         } else {
             const summarizeBtn = actionsBar.createEl('button', { cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-sm' });
             setIcon(summarizeBtn, 'sparkles');
-            summarizeBtn.createSpan({ text: ' 💡 ソース要約レポートを生成' });
+            summarizeBtn.createSpan({ text: ' 💡 インプットの要約・分析レポートを生成' });
             summarizeBtn.onclick = async () => {
-                await this.handleSendMessage('投入されたソースファイルの内容を詳細に分析し、主要なポイントを整理した要約レポートを作成してください。');
+                await this.handleSendMessage('投入されたインプットソースの内容を詳細に分析し、主要なポイントを整理した要約レポートを作成してください。');
             };
         }
 
@@ -325,9 +322,9 @@ export class AINotebookDetailView extends ItemView {
         if (this.chatHistory.length === 0) {
             const emptyEl = messagesEl.createDiv({ cls: 'ai-notebook-chat-placeholder' });
             setIcon(emptyEl.createDiv({ cls: 'ai-notebook-chat-placeholder-icon' }), 'bot');
-            const placeholderText = currentTemplate
-                ? `「${currentTemplate.title}」のテンプレートと「${currentSystem ? currentSystem.name : 'ドメイン知識'}」がセットされています。上のボタンからドラフト生成するか、チャットで対話してください。`
-                : 'インプットソースをもとに、AIエージェントに何でも質問してください。';
+            const placeholderText = this.linkedNotebooks.length > 0
+                ? `${this.linkedNotebooks.length} 件のナレッジノートがコンテキストとしてリンクされています。上のボタンからドラフト生成するか、チャットで対話してください。`
+                : 'インプットソースや参照コンテキストをもとに、AIエージェントに何でも質問・指示してください。';
             emptyEl.createDiv({ text: placeholderText, cls: 'ai-notebook-chat-placeholder-text' });
         } else {
             for (const msg of this.chatHistory) {
@@ -342,7 +339,9 @@ export class AINotebookDetailView extends ItemView {
         // 入力フォーム
         const inputArea = panel.createDiv({ cls: 'ai-notebook-chat-input-area' });
         const textarea = inputArea.createEl('textarea', {
-            placeholder: currentTemplate ? `${currentTemplate.title}の修正指示、レビュー、質問...` : 'ソースフォルダをもとに会話・成果物作成指示...',
+            placeholder: this.linkedNotebooks.length > 0
+                ? '参照コンテキストをもとにドキュメント作成・修正・レビュー指示...'
+                : 'インプットをもとに会話・成果物作成指示...',
             cls: 'ai-notebook-chat-textarea'
         });
 
@@ -354,13 +353,10 @@ export class AINotebookDetailView extends ItemView {
             const prompt = textarea.value.trim();
             if (!prompt) return;
 
-            console.log('[AI Notebook] Triggering doSend with prompt:', prompt);
             textarea.value = '';
             
             if (this.onSendMessageHandler) {
                 await this.onSendMessageHandler(prompt);
-            } else {
-                console.warn('[AI Notebook] onSendMessageHandler is not registered!');
             }
         };
 
@@ -382,7 +378,7 @@ export class AINotebookDetailView extends ItemView {
         panel.empty();
 
         const panelHeader = panel.createDiv({ cls: 'ai-notebook-panel-header' });
-        panelHeader.createEl('h3', { text: '成果物 (Notes & Reports)' });
+        panelHeader.createEl('h3', { text: '成果物 (Artifacts)' });
 
         const headerActions = panelHeader.createDiv({ cls: 'ai-notebook-panel-header-actions' });
         
@@ -433,12 +429,7 @@ export class AINotebookDetailView extends ItemView {
      * AI CLI エージェント実行ハンドラー
      */
     private async handleSendMessage(userPrompt: string): Promise<void> {
-        if (!this.notebookId) {
-            console.warn('[AI Notebook] handleSendMessage failed: notebookId is null');
-            return;
-        }
-
-        console.log(`[AI Notebook] Starting handleSendMessage for notebookId: ${this.notebookId}`);
+        if (!this.notebookId) return;
 
         // 1. ユーザーメッセージを履歴に追加
         const userMsg: ChatMessage = {
@@ -449,7 +440,7 @@ export class AINotebookDetailView extends ItemView {
         };
         this.chatHistory.push(userMsg);
 
-        // 2. ローディング（思考中）表示用の仮メッセージ追加
+        // 2. ローディング表示用仮メッセージ追加
         const loadingMsgId = (Date.now() + 1).toString();
         const loadingMsg: ChatMessage = {
             id: loadingMsgId,
@@ -459,12 +450,10 @@ export class AINotebookDetailView extends ItemView {
         };
         this.chatHistory.push(loadingMsg);
 
-        // ディスク保存 & メモリ状態を維持したUI再描画
         await this.plugin.notebookManager.saveChatHistory(this.notebookId, this.chatHistory);
         await this.refresh(false);
 
         try {
-            // Vault のローカル絶対パスを取得
             let vaultBasePath = '';
             const adapter = this.app.vault.adapter;
             if (adapter instanceof FileSystemAdapter) {
@@ -477,55 +466,25 @@ export class AINotebookDetailView extends ItemView {
             const contextDirAbs = path.join(vaultBasePath, sourcesRelative);
             const outputDirAbs = path.join(vaultBasePath, artifactsRelative);
 
-            console.log(`[AI Notebook] contextDirAbs: ${contextDirAbs}`);
-
             const agentAdapter = AgentFactory.getAdapter(this.plugin.settings);
             const commandPath = AgentFactory.getCommandPath(this.plugin.settings);
 
-            console.log(`[AI Notebook] Agent: ${agentAdapter.name}, commandPath: ${commandPath}`);
-
-            // システム知識とテンプレートのコンテンツをロード
-            let systemKnowledgeName: string | undefined;
-            let systemKnowledgeContent: string | undefined;
-            let templateTitle: string | undefined;
-            let templateContent: string | undefined;
-
-            if (this.metadata?.systemId) {
-                const sys = await this.plugin.notebookManager.getSystem(this.metadata.systemId);
-                if (sys) {
-                    systemKnowledgeName = sys.name;
-                    systemKnowledgeContent = sys.content;
-                }
-            }
-
-            if (this.metadata?.templateId) {
-                const tpl = await this.plugin.notebookManager.getTemplate(this.metadata.templateId);
-                if (tpl) {
-                    templateTitle = tpl.title;
-                    templateContent = tpl.content;
-                }
-            }
+            // リンクされた参照ノートブック群の成果物を動的に集約
+            const linkedContexts = await this.plugin.notebookManager.getLinkedContexts(this.notebookId);
 
             // 3. AI エージェントの実行
             const result = await agentAdapter.executePrompt(userPrompt, {
                 contextDir: contextDirAbs,
                 outputDir: outputDirAbs,
                 commandPath: commandPath,
-                systemKnowledgeName,
-                systemKnowledgeContent,
-                templateTitle,
-                templateContent
+                linkedContexts: linkedContexts
             });
-
-            console.log(`[AI Notebook] Agent response text received. Length: ${result.text.length}`);
 
             // 仮ローディングメッセージの置換
             const lastIdx = this.chatHistory.findIndex(m => m.id === loadingMsgId);
             if (lastIdx !== -1) {
                 this.chatHistory[lastIdx].text = result.text || '(AIからの応答本文が空です)';
-                console.log('[AI Notebook] Successfully replaced loading message with AI response');
             } else {
-                console.warn('[AI Notebook] Could not find loading message in chatHistory!');
                 this.chatHistory.push({
                     id: Date.now().toString(),
                     sender: 'agent',
@@ -540,7 +499,6 @@ export class AINotebookDetailView extends ItemView {
             while ((match = codeBlockRegex.exec(result.text)) !== null) {
                 const title = match[1].trim();
                 const content = match[2].trim();
-                console.log(`[AI Notebook] Extracted artifact: "${title}"`);
                 await this.plugin.notebookManager.addArtifactFile(this.notebookId, title, content);
                 new Notice(`成果物 "${title}" が生成されました`);
             }

@@ -6,14 +6,17 @@ import * as os from 'os';
 
 export const execAsync = promisify(exec);
 
+import { LinkedContext } from '../types';
+
 export interface AgentOptions {
-    contextDir: string;  // sources/ の絶対パス
-    outputDir: string;   // artifacts/ の絶対パス
+    contextDir: string;  // 当該ノートブック sources/ の絶対パス
+    outputDir: string;   // 当該ノートブック artifacts/ の絶対パス
     commandPath: string; // 実行パス (agy, claude, etc.)
-    systemKnowledgeName?: string;
-    systemKnowledgeContent?: string;
-    templateTitle?: string;
-    templateContent?: string;
+    linkedContexts?: LinkedContext[]; // リンクされた別ノートブックの成果物・ナレッジ群
+    systemKnowledgeName?: string;     // 後方互換用
+    systemKnowledgeContent?: string;  // 後方互換用
+    templateTitle?: string;           // 後方互換用
+    templateContent?: string;         // 後方互換用
 }
 
 export interface AgentResult {

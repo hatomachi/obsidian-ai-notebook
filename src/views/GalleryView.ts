@@ -142,9 +142,14 @@ export class AINotebookGalleryView extends ItemView {
                 card.createEl('p', { text: '説明なし', cls: 'ai-notebook-card-desc ai-notebook-card-desc-empty' });
             }
 
-            // システム & テンプレートバッジ
-            if (nb.systemId || nb.templateId) {
+            // 参照ノートブック & タグバッジ
+            if ((nb.linkedNotebookIds && nb.linkedNotebookIds.length > 0) || nb.systemId || nb.templateId) {
                 const badgesEl = card.createDiv({ cls: 'ai-notebook-card-badges' });
+                if (nb.linkedNotebookIds && nb.linkedNotebookIds.length > 0) {
+                    const linkBadge = badgesEl.createSpan({ cls: 'ai-notebook-tag-badge ai-notebook-tag-linked' });
+                    setIcon(linkBadge.createSpan({ cls: 'ai-notebook-tag-icon' }), 'link');
+                    linkBadge.createSpan({ text: `参照 ${nb.linkedNotebookIds.length}件` });
+                }
                 if (nb.systemId) {
                     const sysBadge = badgesEl.createSpan({ cls: 'ai-notebook-tag-badge ai-notebook-tag-system' });
                     setIcon(sysBadge.createSpan({ cls: 'ai-notebook-tag-icon' }), 'cpu');

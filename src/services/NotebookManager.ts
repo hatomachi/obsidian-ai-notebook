@@ -38,25 +38,48 @@ export class NotebookManager {
     }
 
     /**
-     * 初回用のサンプルシステム知識とドキュメントテンプレートを生成
+     * 初回用の標準ナレッジ育成ノートブック（APIGW仕様・リリース計画書デザイン仕様）を生成
      */
     private async ensureSampleData(): Promise<void> {
-        const sampleSystemPath = normalizePath(`${this.settings.rootDir}/systems/apigw.md`);
-        if (!this.app.vault.getAbstractFileByPath(sampleSystemPath)) {
-            const apigwContent = `---
-system_id: "apigw"
-name: "API Gateway (APIGW)"
-tags: [core, api, routing, auth]
-description: "KongベースのAPI Gateway。マイクロサービスへのルーティング、認証トークン検証、レートリミットを担当。"
----
-# システム概要
+        // 1. 📘 APIGW システム仕様・クセ ノートブック
+        const apigwId = 'sample_sys_apigw';
+        const apigwIndexPath = normalizePath(`${this.settings.rootDir}/index/${apigwId}.md`);
+        if (!this.app.vault.getAbstractFileByPath(apigwIndexPath)) {
+            const now = new Date().toISOString();
+            const apigwFrontmatter = stringifyYaml({
+                notebook_id: apigwId,
+                title: '📘 APIGW システム仕様・クセ',
+                created_at: now,
+                updated_at: now,
+                tags: ['system', 'apigw', 'architecture', 'knowledge'],
+                icon: 'cpu',
+                description: 'KongベースのAPI Gateway仕様、トラブル教訓、運用上の注意点まとめ',
+                linked_notebook_ids: []
+            });
+            await this.app.vault.create(apigwIndexPath, `---\n${apigwFrontmatter}---\n# 📘 APIGW システム仕様・クセ\n\nKong Gatewayおよび自社カスタムプラグインの仕様と運用上の知見。\n`);
+
+            const apigwDir = normalizePath(`${this.settings.rootDir}/notebooks/${apigwId}`);
+            await this.ensureFolder(apigwDir);
+            await this.ensureFolder(normalizePath(`${apigwDir}/sources`));
+            await this.ensureFolder(normalizePath(`${apigwDir}/artifacts`));
+            await this.app.vault.create(normalizePath(`${apigwDir}/chat.json`), JSON.stringify([], null, 2));
+
+            // 成果物1: アーキテクチャ概要
+            const archDoc = `# APIGW システムアーキテクチャ概要
+
+## 概要
 本システムはKong Gatewayおよび自社カスタムプラグインで構成されるAPI Gatewayです。
 外部クライアントからのリクエストを受け付け、認証基盤（Auth Service）との連携によるトークン検証、ルーティング、レートリミット制御を行います。
 
-## アーキテクチャ & 依存関係
+## インフラ構成 & 依存関係
 - **インフラ**: AWS ECS (Fargate), ALB
 - **データストア**: Redis Cluster (レートリミット・トークンキャッシュ用), PostgreSQL (Kong設定DB)
 - **依存サービス**: Auth Service (認証トークン検証), 各バックエンドマイクロサービス
+`;
+            await this.addArtifactFile(apigwId, '01_システムアーキテクチャ概要', archDoc);
+
+            // 成果物2: 運用上のクセと注意事項
+            const quirksDoc = `# APIGW 運用上のクセ・重要注意事項 & ロールバック基準
 
 ## リリース・運用上のクセと重要注意事項
 1. **Blue-Green デプロイとコネクションドレイン**:
@@ -72,20 +95,36 @@ description: "KongベースのAPI Gateway。マイクロサービスへのルー
 - リリース後10分間の 5xx エラー率が 0.5% を超えた場合。
 - 認証APIのレイテンシ (p99) が 300ms を超過した場合。
 `;
-            await this.app.vault.create(sampleSystemPath, apigwContent);
+            await this.addArtifactFile(apigwId, '02_運用上のクセと注意事項', quirksDoc);
         }
 
-        const sampleTemplatePath = normalizePath(`${this.settings.rootDir}/templates/release-plan.md`);
-        if (!this.app.vault.getAbstractFileByPath(sampleTemplatePath)) {
-            const releasePlanContent = `---
-template_id: "release-plan"
-title: "リリース計画書"
-tags: [release, deployment, standard]
-description: "本番リリースに伴う変更内容、手順、品質評価、ロールバック基準をまとめる標準計画書"
----
-# リリース計画書 作成ガイドライン & フォーマット
+        // 2. 📋 リリース計画書 デザイン仕様 ノートブック
+        const releaseTplId = 'sample_tpl_release';
+        const releaseTplIndexPath = normalizePath(`${this.settings.rootDir}/index/${releaseTplId}.md`);
+        if (!this.app.vault.getAbstractFileByPath(releaseTplIndexPath)) {
+            const now = new Date().toISOString();
+            const tplFrontmatter = stringifyYaml({
+                notebook_id: releaseTplId,
+                title: '📋 リリース計画書 デザイン仕様',
+                created_at: now,
+                updated_at: now,
+                tags: ['template', 'release', 'standard', 'rules'],
+                icon: 'file-text',
+                description: '本番リリース計画書の標準章立てルールおよび高品質な記述サンプル (few-shot)',
+                linked_notebook_ids: []
+            });
+            await this.app.vault.create(releaseTplIndexPath, `---\n${tplFrontmatter}---\n# 📋 リリース計画書 デザイン仕様\n\n標準リリース計画書のフォーマット定義と、AIに模倣させるための高品質サンプル。\n`);
 
-以下の章立てに厳格に準拠してドキュメントを作成してください。ドメイン知識（システムナレッジ）にある注意事項やロールバック基準、過去トラブルの教訓を必ず各セクションに反映すること。
+            const tplDir = normalizePath(`${this.settings.rootDir}/notebooks/${releaseTplId}`);
+            await this.ensureFolder(tplDir);
+            await this.ensureFolder(normalizePath(`${tplDir}/sources`));
+            await this.ensureFolder(normalizePath(`${tplDir}/artifacts`));
+            await this.app.vault.create(normalizePath(`${tplDir}/chat.json`), JSON.stringify([], null, 2));
+
+            // 成果物1: 作成ルール
+            const rulesDoc = `# リリース計画書 標準作成ガイドライン & 章立てルール
+
+以下の章立てに厳格に準拠してドキュメントを作成してください。参照元のシステム知識にある注意事項やロールバック基準、過去トラブルの教訓を必ず各セクションに反映すること。
 
 ---
 
@@ -123,7 +162,43 @@ description: "本番リリースに伴う変更内容、手順、品質評価、
 - **ロールバック判断基準**: (明確な数値基準を記載)
 - **ロールバック手順**: 障害発生時の具体的な切り戻し手順と所要想定時間。
 `;
-            await this.app.vault.create(sampleTemplatePath, releasePlanContent);
+            await this.addArtifactFile(releaseTplId, '01_リリース計画書_標準作成ルール', rulesDoc);
+
+            // 成果物2: few-shot サンプル
+            const fewShotDoc = `# 【高品質サンプル】2026-08 APIGW v2.4 リリース計画書 (few-shot)
+
+## 1. リリース概要・背景
+- **リリース日時（予定）**: 2026-08-15 22:00〜23:00 JST
+- **リリース対象システム**: API Gateway (APIGW)
+- **リリース目的・背景**: OAuth 2.1 トークン検証プラグインのメモリリーク解消およびレートリミットRedis接続プールの最適化。
+- **関連チケット/PR**: PR #452, TICKET-8821
+
+## 2. リリース内容・変更点詳細
+- **主な機能追加・改修内容**: トークン検証キャッシュのTTL制御修正、Redis Cluster再接続リトライのバックオフ制御導入。
+- **API・インターフェースの変更点**: 変更なし（内部ロジック最適化のみ）。
+- **DBマイグレーション / 設定変更の有無**: 環境変数 \`REDIS_POOL_MAX_IDLE=50\` の追加。
+- **影響範囲**: 全外部APIリクエスト。
+
+## 3. 品質評価・テスト結果サマリー
+- **テスト実施状況**: 単体テスト100%パス、ステージング環境での48時間ソークテスト完了（メモリ増加なし確認済み）。
+- **パフォーマンステスト**: 5,000 req/sec の高負荷時でもレイテンシp99が25ms以内を維持。
+
+## 4. リリース方針 & デプロイ作業手順
+- **デプロイ方式**: Blue-Green デプロイ（ALB コネクションドレイン待機時間: 90秒）
+- **本番デプロイ手順**:
+  1. [22:00] グリーン環境へ新バージョンコンテナデプロイ & \`/healthz\` 疎通確認
+  2. [22:15] ALBのトラフィックをグリーン環境へ50%シフト、エラーレート監視 (5分間)
+  3. [22:20] 100%切り替え実行、ALBコネクションドレイン完了待機 (90秒)
+  4. [22:25] 重要エンドポイント (\`/api/v2/auth\`, \`/api/v2/users\`) のスモークテスト実施
+
+## 5. リリース後確認ポイント & 切り戻し方針
+- **監視項目**: Datadog APM にて 5xx エラー率、Redisコネクション数、p99レイテンシを常時監視。
+- **ロールバック判断基準**:
+  - 切り替え後10分間に 5xx エラー率が 0.5% を超過した場合
+  - 認証レイテンシ p99 が 300ms を超過した場合
+- **ロールバック手順**: ALB ターゲットグループを即座に旧ブルー環境へ100%戻す（所要想定時間: 約30秒）。
+`;
+            await this.addArtifactFile(releaseTplId, '02_fewshot_良質サンプル', fewShotDoc);
         }
     }
 
@@ -140,7 +215,13 @@ description: "本番リリースに伴う変更内容、手順、品質評価、
     /**
      * 新規ノートブックを作成
      */
-    async createNotebook(title: string, description: string = '', systemId?: string, templateId?: string): Promise<NotebookMetadata> {
+    async createNotebook(
+        title: string,
+        description: string = '',
+        linkedNotebookIds: string[] = [],
+        systemId?: string,
+        templateId?: string
+    ): Promise<NotebookMetadata> {
         await this.ensureBaseDirectories();
         const id = this.generateNotebookId();
         const now = new Date().toISOString();
@@ -153,6 +234,7 @@ description: "本番リリースに伴う変更内容、手順、品質評価、
             tags: [],
             icon: 'book-open',
             description: description.trim(),
+            linkedNotebookIds: linkedNotebookIds || [],
             systemId: systemId || undefined,
             templateId: templateId || undefined
         };
@@ -166,7 +248,8 @@ description: "本番リリースに伴う変更内容、手順、品質評価、
             updated_at: metadata.updatedAt,
             tags: metadata.tags,
             icon: metadata.icon,
-            description: metadata.description
+            description: metadata.description,
+            linked_notebook_ids: metadata.linkedNotebookIds || []
         };
         if (metadata.systemId) frontmatterObj.system_id = metadata.systemId;
         if (metadata.templateId) frontmatterObj.template_id = metadata.templateId;
@@ -236,6 +319,7 @@ description: "本番リリースに伴う変更内容、手順、品質評価、
             tags: yaml.tags || [],
             icon: yaml.icon || 'book-open',
             description: yaml.description || '',
+            linkedNotebookIds: yaml.linked_notebook_ids || yaml.linkedNotebookIds || [],
             systemId: yaml.system_id || undefined,
             templateId: yaml.template_id || undefined
         };
@@ -277,7 +361,8 @@ description: "本番リリースに伴う変更内容、手順、品質評価、
             updated_at: updated.updatedAt,
             tags: updated.tags,
             icon: updated.icon,
-            description: updated.description
+            description: updated.description,
+            linked_notebook_ids: updated.linkedNotebookIds || []
         };
         if (updated.systemId) frontmatterObj.system_id = updated.systemId;
         if (updated.templateId) frontmatterObj.template_id = updated.templateId;
@@ -290,6 +375,52 @@ description: "本番リリースに伴う変更内容、手順、品質評価、
         const newContent = `---\n${frontmatter}---\n${body}`;
 
         await this.app.vault.modify(file, newContent);
+    }
+
+    /**
+     * リンクされたノートブック群の成果物（ナレッジ・ルール・サンプル）を走査・集約して取得
+     */
+    async getLinkedContexts(notebookId: string): Promise<import('../types').LinkedContext[]> {
+        const metadata = await this.getNotebookMetadata(notebookId);
+        if (!metadata || !metadata.linkedNotebookIds || metadata.linkedNotebookIds.length === 0) {
+            return [];
+        }
+
+        const contexts: import('../types').LinkedContext[] = [];
+
+        for (const linkedId of metadata.linkedNotebookIds) {
+            const targetMeta = await this.getNotebookMetadata(linkedId);
+            if (!targetMeta) continue;
+
+            const artifacts = await this.getArtifacts(linkedId);
+            const loadedArtifacts: import('../types').LinkedArtifact[] = [];
+
+            for (const art of artifacts) {
+                const artFile = this.app.vault.getAbstractFileByPath(art.path);
+                if (artFile instanceof TFile) {
+                    try {
+                        const content = await this.app.vault.read(artFile);
+                        loadedArtifacts.push({
+                            name: art.id,
+                            title: art.title,
+                            path: art.path,
+                            content: content
+                        });
+                    } catch (e) {
+                        console.warn(`Failed to read artifact ${art.path} for linked context:`, e);
+                    }
+                }
+            }
+
+            contexts.push({
+                notebookId: targetMeta.id,
+                notebookTitle: targetMeta.title,
+                description: targetMeta.description,
+                artifacts: loadedArtifacts
+            });
+        }
+
+        return contexts;
     }
 
     /**

@@ -24,8 +24,23 @@ export interface NotebookMetadata {
     tags: string[];
     icon: string;
     description: string;
-    systemId?: string;
-    templateId?: string;
+    linkedNotebookIds?: string[];
+    systemId?: string; // 後方互換用
+    templateId?: string; // 後方互換用
+}
+
+export interface LinkedArtifact {
+    name: string;
+    title: string;
+    path: string;
+    content: string;
+}
+
+export interface LinkedContext {
+    notebookId: string;
+    notebookTitle: string;
+    description: string;
+    artifacts: LinkedArtifact[];
 }
 
 export interface NotebookSource {

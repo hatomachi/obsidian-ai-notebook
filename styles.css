@@ -668,6 +668,230 @@
     margin-bottom: 8px;
 }
 
+.ai-notebook-btn-xs {
+    padding: 2px 8px;
+    font-size: 0.78rem;
+    border-radius: 4px;
+}
+
+.ai-notebook-header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.ai-notebook-detail-title-icon {
+    display: flex;
+    align-items: center;
+    color: var(--interactive-accent);
+}
+
+/* Left Panel: Sections (Linked Context & Direct Inputs) */
+.ai-notebook-context-section {
+    border-bottom: 1px solid var(--background-modifier-border);
+    max-height: 40%;
+    display: flex;
+    flex-direction: column;
+}
+
+.ai-notebook-source-section {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.ai-notebook-linked-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 16px 16px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.ai-notebook-linked-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    transition: all 0.2s ease;
+}
+
+.ai-notebook-linked-item:hover {
+    background-color: var(--background-modifier-hover);
+    border-color: var(--interactive-accent);
+}
+
+.ai-notebook-linked-icon {
+    color: var(--interactive-accent);
+    display: flex;
+    align-items: center;
+}
+
+.ai-notebook-linked-name-wrap {
+    flex: 1;
+    overflow: hidden;
+}
+
+.ai-notebook-linked-name {
+    font-size: 0.86rem;
+    font-weight: 500;
+    color: var(--text-normal);
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: transparent;
+    transition: text-decoration-color 0.2s ease, color 0.2s ease;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: block;
+}
+
+.ai-notebook-linked-name:hover {
+    color: var(--interactive-accent);
+    text-decoration-color: var(--interactive-accent);
+}
+
+.ai-notebook-empty-linked {
+    padding: 12px;
+    text-align: center;
+}
+
+.ai-notebook-hint-text {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+    margin-top: 4px;
+}
+
+/* Link Notebook Modal & Create Modal Link List */
+.ai-notebook-link-modal {
+    width: 600px !important;
+    max-height: 80vh !important;
+}
+
+.ai-notebook-modal-header {
+    margin-bottom: 16px;
+}
+
+.ai-notebook-modal-header h2 {
+    margin: 0 0 6px 0;
+    font-size: 1.3rem;
+}
+
+.ai-notebook-modal-desc {
+    margin: 0;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+}
+
+.ai-notebook-link-list-container {
+    max-height: 320px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 20px;
+    padding: 4px;
+}
+
+.ai-notebook-link-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    border-radius: 8px;
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.ai-notebook-link-item:hover {
+    background-color: var(--background-modifier-hover);
+    border-color: var(--interactive-accent);
+}
+
+.ai-notebook-link-item.is-selected {
+    border-color: var(--interactive-accent);
+    background-color: rgba(var(--interactive-accent-rgb), 0.08);
+}
+
+.ai-notebook-link-checkbox {
+    cursor: pointer;
+}
+
+.ai-notebook-link-text-wrap {
+    flex: 1;
+    overflow: hidden;
+}
+
+.ai-notebook-link-title {
+    margin: 0 0 2px 0;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-normal);
+}
+
+.ai-notebook-link-desc {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ai-notebook-modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding-top: 12px;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+/* Create Modal Link Selection Section */
+.ai-notebook-create-context-section {
+    margin: 16px 0;
+    padding: 14px;
+    border-radius: 8px;
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+}
+
+.ai-notebook-create-context-section h4 {
+    margin: 0 0 4px 0;
+    font-size: 0.95rem;
+}
+
+.ai-notebook-create-link-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 180px;
+    overflow-y: auto;
+    margin-top: 10px;
+}
+
+.ai-notebook-link-item-simple {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background-color: var(--background-primary);
+    cursor: pointer;
+}
+
+.ai-notebook-link-item-simple:hover {
+    background-color: var(--background-modifier-hover);
+}
+
 .ai-notebook-tag-badge {
     display: inline-flex;
     align-items: center;
@@ -688,6 +912,12 @@
     background-color: var(--background-modifier-hover);
     color: var(--text-normal);
     border: 1px solid var(--background-modifier-border);
+}
+
+.ai-notebook-tag-linked {
+    background-color: rgba(var(--interactive-accent-rgb), 0.15);
+    color: var(--interactive-accent);
+    border: 1px solid rgba(var(--interactive-accent-rgb), 0.3);
 }
 
 .ai-notebook-tag-icon {

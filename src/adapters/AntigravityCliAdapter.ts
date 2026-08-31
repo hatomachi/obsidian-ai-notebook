@@ -17,25 +17,48 @@ export class AntigravityCliAdapter implements AIAgentAdapter {
         let systemContext = `あなたは高品質な技術・業務ドキュメントの作成およびレビューを支援するエキスパートAIアシスタントです。\n`;
         systemContext += `作業コンテキストフォルダ: "${options.contextDir}"\n\n`;
 
-        // 1. ドメイン・システム知識
+        // 1. リンクされた参照コンテキスト (Linked Notebooks)
+        if (options.linkedContexts && options.linkedContexts.length > 0) {
+            systemContext += `【参照コンテキスト（Linked Notebooks / 知識・ルール・過去サンプル）】\n`;
+            systemContext += `以下はこのタスクに関連付けられた別のノートブックから読み込まれた成果物（システム仕様、ドキュメントルール、高品質サンプル等）です。これらを深く理解し、用語・章立て・注意点・過去トラブル教訓をドキュメント生成に完全に反映してください。\n\n`;
+
+            for (const ctx of options.linkedContexts) {
+                systemContext += `### 📘 参照ノートブック: "${ctx.notebookTitle}"\n`;
+                if (ctx.description) {
+                    systemContext += `説明: ${ctx.description}\n`;
+                }
+                if (ctx.artifacts.length > 0) {
+                    for (const art of ctx.artifacts) {
+                        systemContext += `\n--- 成果物: ${art.title} (${art.name}) ---\n`;
+                        systemContext += `${art.content}\n`;
+                        systemContext += `--- 終了: ${art.title} ---\n`;
+                    }
+                } else {
+                    systemContext += `(この参照ノートブックにはまだ成果物がありません)\n`;
+                }
+                systemContext += `\n`;
+            }
+        }
+
+        // 2. ドメイン・システム知識 (後方互換)
         if (options.systemKnowledgeContent) {
             systemContext += `【ドメイン・システム知識 (${options.systemKnowledgeName || 'システム仕様'})】\n`;
             systemContext += `以下はこのシステムに関する恒久的な仕様、アーキテクチャ、過去のトラブル教訓、運用上の注意点です。ドキュメント作成時はこれらを必ず踏まえてください。\n`;
             systemContext += `--- 開始: システム知識 ---\n${options.systemKnowledgeContent}\n--- 終了: システム知識 ---\n\n`;
         }
 
-        // 2. ドキュメントフォーマット・テンプレート
+        // 3. ドキュメントフォーマット・テンプレート (後方互換)
         if (options.templateContent) {
             systemContext += `【ドキュメントフォーマット・作成基準 (${options.templateTitle || '指定テンプレート'})】\n`;
             systemContext += `以下のフォーマット・章立て・記述基準に厳格に準拠してドキュメントを作成・更新してください。\n`;
             systemContext += `--- 開始: テンプレート ---\n${options.templateContent}\n--- 終了: テンプレート ---\n\n`;
         }
 
-        // 3. contextDir 内のソースファイルを走査
+        // 4. contextDir 内のソースファイル (直接投入ファイル) を走査
         if (fs.existsSync(options.contextDir)) {
             const files = fs.readdirSync(options.contextDir);
             if (files.length > 0) {
-                systemContext += `【インプットソースファイル（今回の個別情報・変更点・議事録など）】\n`;
+                systemContext += `【インプットソースファイル（今回のタスク固有の個別情報・PR差分・議事録など）】\n`;
                 for (const file of files) {
                     const filePath = path.join(options.contextDir, file);
                     try {
@@ -43,7 +66,7 @@ export class AntigravityCliAdapter implements AIAgentAdapter {
                         if (stat.isFile()) {
                             const ext = path.extname(file).toLowerCase();
                             // テキスト形式のファイルを読み込んで直接埋め込む
-                            if (['.txt', '.md', '.json', '.csv', '.js', '.ts', '.html', '.css', '.py', '.yaml', '.yml'].includes(ext)) {
+                            if (['.txt', '.md', '.json', '.csv', '.js', '.ts', '.html', '.css', '.py', '.yaml', '.yml', '.patch', '.diff'].includes(ext)) {
                                 const content = fs.readFileSync(filePath, 'utf-8');
                                 systemContext += `--- ファイル: ${file} ---\n${content.slice(0, 20000)}\n\n`;
                             } else {
@@ -55,13 +78,13 @@ export class AntigravityCliAdapter implements AIAgentAdapter {
                     }
                 }
             } else {
-                systemContext += `【インプットソース】: ソースファイルはありません。\n\n`;
+                systemContext += `【インプットソース】: 直接投入されたソースファイルはありません。\n\n`;
             }
         }
 
         systemContext += `【ユーザーの質問・指示】\n${userPrompt}\n\n`;
         systemContext += `丁寧かつ明瞭に回答してください。成果物（リリース計画書・レポート・要約・設計メモ等）を作成または修正する場合は、以下のように \`\`\`markdown:成果物タイトル.md の形式でファイル内容をコードブロックとして出力してください。\n`;
-        systemContext += `※テンプレートが指定されている場合は、テンプレートの全セクション・章立てを網羅し、ドメイン知識の注意事項やインプットソースの情報を反映した完成度の高いMarkdownを出力してください。`;
+        systemContext += `※参照コンテキスト（Linked Notebooks）に仕様やルール・サンプルが含まれている場合は、それらの章立て・注意事項・フォーマットに厳格に準拠した完成度の高いMarkdownを出力してください。`;
 
         const escapedPrompt = escapePrompt(systemContext);
         const cmd = `"${exePath}" -p "${escapedPrompt}"`;
