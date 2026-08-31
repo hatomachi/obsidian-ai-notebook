@@ -263,7 +263,45 @@ async function main() {
     generateExcelC();
     await generatePptx();
     await generateDocx();
-    console.log(`=== 全テストデータの生成完了: ${outputDir} ===`);
+
+    // 階層型ファイルサーバー構造の模擬ディレクトリ生成 (Phase 4c 探索・一括Extract検証用)
+    console.log(`=== 階層型フォルダツリーの生成 ===`);
+    const dir2024A = path.join(outputDir, '2024/A社_基幹刷新');
+    const dir2025B = path.join(outputDir, '2025/B社_APIGW移行');
+    const dir2025C = path.join(outputDir, '2025/C社_クラウド移行');
+    const dirCommon = path.join(outputDir, '共通提案・要件定義');
+
+    ensureDirectory(dir2024A);
+    ensureDirectory(dir2025B);
+    ensureDirectory(dir2025C);
+    ensureDirectory(dirCommon);
+
+    // 階層配下へファイルをコピー配置
+    fs.copyFileSync(
+        path.join(outputDir, '01_2024_A社_基幹刷新_工数見積書_v2.0.xlsx'),
+        path.join(dir2024A, 'A社_基幹刷新_工数見積書_v2.0.xlsx')
+    );
+    fs.copyFileSync(
+        path.join(outputDir, '04_提案書_システム方式設計_抜粋.pptx'),
+        path.join(dir2024A, 'A社_提案書_システム方式設計_抜粋.pptx')
+    );
+
+    fs.copyFileSync(
+        path.join(outputDir, '02_2025_B社_APIGW移行_見積算出シート_fix.xlsx'),
+        path.join(dir2025B, 'B社_APIGW移行_見積算出シート_fix.xlsx')
+    );
+
+    fs.copyFileSync(
+        path.join(outputDir, '03_2025_C社_クラウド移行_費用算出.xlsx'),
+        path.join(dir2025C, 'C社_クラウド移行_費用算出.xlsx')
+    );
+
+    fs.copyFileSync(
+        path.join(outputDir, '05_要件定義書_非機能要件_サンプル.docx'),
+        path.join(dirCommon, '全社共通_非機能要件定義書_サンプル.docx')
+    );
+
+    console.log(`=== 全テストデータ & 階層ツリーの生成完了: ${outputDir} ===`);
 }
 
 main().catch(err => {

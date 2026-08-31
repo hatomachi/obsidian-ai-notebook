@@ -16,6 +16,7 @@ export interface AgentOptions {
     maxTurns?: number;    // 最大ターン数（デフォルト: 15）
     linkedContexts?: LinkedContext[]; // リンクされた別ノートブックの成果物・ナレッジ群
     chatHistory?: ChatMessage[];      // 直近の会話履歴（マルチターン文脈）
+    boundFolderTreeText?: string;     // バインドされた外部フォルダ資産の階層ツリー概要（読み取り専用・実パス秘匿）
     onStdoutChunk?: (chunk: string) => void; // ストリーミング用コールバック
     abortSignal?: AbortSignal;               // キャンセル用シグナル
     
@@ -354,7 +355,17 @@ export function buildDirectEditSystemPrompt(userPrompt: string, options: AgentOp
         }
     }
 
-    // 4. 後方互換ドメイン知識・テンプレート
+    // 4. バインドされた外部フォルダ資産のツリー概要 (AI探索・推薦用)
+    if (options.boundFolderTreeText) {
+        prompt += `【バインドされた外部共有フォルダ資産 (読み取り専用・探索用)】\n`;
+        prompt += `このノートブックには企業のファイルサーバーまたは共有フォルダが接続されています。以下のツリーは利用可能な外部ドキュメント一覧です。\n`;
+        prompt += `ユーザーから「〇〇の過去見積を探して」「〇〇に関する資料を教えて」などと探索・提案を求められた場合は、以下のフォルダツリーから該当する候補（相対フォルダ・ファイル名）を探索し、ユーザーにわかりやすく提示・推薦してください。\n\n`;
+        prompt += `--- 外部フォルダツリー概要 ---\n`;
+        prompt += `${options.boundFolderTreeText}\n`;
+        prompt += `--- 外部フォルダツリーここまで ---\n\n`;
+    }
+
+    // 5. 後方互換ドメイン知識・テンプレート
     if (options.systemKnowledgeContent) {
         prompt += `【ドメイン・システム知識 (${options.systemKnowledgeName || 'システム仕様'})】\n`;
         prompt += `--- 開始: システム知識 ---\n${options.systemKnowledgeContent}\n--- 終了: システム知識 ---\n\n`;
@@ -364,7 +375,7 @@ export function buildDirectEditSystemPrompt(userPrompt: string, options: AgentOp
         prompt += `--- 開始: テンプレート ---\n${options.templateContent}\n--- 終了: テンプレート ---\n\n`;
     }
 
-    // 5. 対話履歴
+    // 6. 対話履歴
     if (options.chatHistory && options.chatHistory.length > 0) {
         const validHistory = options.chatHistory.filter(m => m.text && !m.text.startsWith('思考中...'));
         if (validHistory.length > 0) {

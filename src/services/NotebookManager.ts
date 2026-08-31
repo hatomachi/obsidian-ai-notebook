@@ -1,6 +1,8 @@
 import { App, TFile, TFolder, parseYaml, stringifyYaml, normalizePath } from 'obsidian';
-import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AINotebookSettings, SystemKnowledge, DocumentTemplate } from '../types';
+import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AINotebookSettings, SystemKnowledge, DocumentTemplate, SourceOrigin } from '../types';
 import { TranscriptionService } from './transcription/TranscriptionService';
+import { BoundFolderReader } from './BoundFolderReader';
+import * as path from 'path';
 
 export class NotebookManager {
     app: App;
@@ -303,6 +305,7 @@ export class NotebookManager {
         title: string,
         description: string = '',
         linkedNotebookIds: string[] = [],
+        boundFolderPath?: string,
         systemId?: string,
         templateId?: string
     ): Promise<NotebookMetadata> {
@@ -319,6 +322,7 @@ export class NotebookManager {
             icon: 'book-open',
             description: description.trim(),
             linkedNotebookIds: linkedNotebookIds || [],
+            boundFolderPath: boundFolderPath?.trim() || undefined,
             systemId: systemId || undefined,
             templateId: templateId || undefined
         };
@@ -347,6 +351,7 @@ export class NotebookManager {
             linked_notebook_ids: metadata.linkedNotebookIds || [],
             active_session_id: metadata.activeSessionId
         };
+        if (metadata.boundFolderPath) frontmatterObj.bound_folder_path = metadata.boundFolderPath;
         if (metadata.systemId) frontmatterObj.system_id = metadata.systemId;
         if (metadata.templateId) frontmatterObj.template_id = metadata.templateId;
 
@@ -407,6 +412,7 @@ export class NotebookManager {
             description: yaml.description || '',
             linkedNotebookIds: yaml.linked_notebook_ids || yaml.linkedNotebookIds || [],
             activeSessionId: yaml.active_session_id || yaml.activeSessionId || undefined,
+            boundFolderPath: yaml.bound_folder_path || yaml.boundFolderPath || undefined,
             systemId: yaml.system_id || undefined,
             templateId: yaml.template_id || undefined
         };
@@ -452,6 +458,7 @@ export class NotebookManager {
             linked_notebook_ids: updated.linkedNotebookIds || []
         };
         if (updated.activeSessionId) frontmatterObj.active_session_id = updated.activeSessionId;
+        if (updated.boundFolderPath !== undefined) frontmatterObj.bound_folder_path = updated.boundFolderPath;
         if (updated.systemId) frontmatterObj.system_id = updated.systemId;
         if (updated.templateId) frontmatterObj.template_id = updated.templateId;
 
@@ -531,6 +538,40 @@ export class NotebookManager {
     }
 
     /**
+     * ソースメタデータ（origins.json）の読み込み
+     */
+    private async readSourcesOrigins(id: string): Promise<Record<string, SourceOrigin>> {
+        const originsPath = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources/.origins.json`);
+        const file = this.app.vault.getAbstractFileByPath(originsPath);
+        if (file instanceof TFile) {
+            try {
+                const content = await this.app.vault.read(file);
+                return JSON.parse(content);
+            } catch (e) {
+                console.warn(`Failed to read .origins.json for notebook ${id}:`, e);
+            }
+        }
+        return {};
+    }
+
+    /**
+     * ソースメタデータ（origins.json）の保存
+     */
+    private async saveSourcesOrigins(id: string, origins: Record<string, SourceOrigin>): Promise<void> {
+        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources`);
+        await this.ensureFolder(sourcesDir);
+        const originsPath = normalizePath(`${sourcesDir}/.origins.json`);
+        const content = JSON.stringify(origins, null, 2);
+
+        const existing = this.app.vault.getAbstractFileByPath(originsPath);
+        if (existing instanceof TFile) {
+            await this.app.vault.modify(existing, content);
+        } else {
+            await this.app.vault.create(originsPath, content);
+        }
+    }
+
+    /**
      * ソースファイル一覧の取得
      */
     async getSources(id: string): Promise<NotebookSource[]> {
@@ -538,9 +579,11 @@ export class NotebookManager {
         const folder = this.app.vault.getAbstractFileByPath(sourcesDir);
         if (!(folder instanceof TFolder)) return [];
 
+        const originsMap = await this.readSourcesOrigins(id);
         const sources: NotebookSource[] = [];
+
         for (const file of folder.children) {
-            if (file instanceof TFile) {
+            if (file instanceof TFile && !file.name.startsWith('.')) {
                 let convertedFrom: string | undefined = undefined;
                 // *.xlsx.md, *.pptx.md, *.docx.md の検出
                 const match = file.name.match(/^(.+\.(xlsx|xls|pptx|docx))\.md$/i);
@@ -548,12 +591,16 @@ export class NotebookManager {
                     convertedFrom = match[1];
                 }
 
+                // 変換前ファイル名または現在のファイル名から origin を検索
+                const origin = (convertedFrom && originsMap[convertedFrom]) || originsMap[file.name] || undefined;
+
                 sources.push({
                     name: file.name,
                     path: file.path,
                     extension: file.extension,
                     size: file.stat.size,
                     addedAt: new Date(file.stat.ctime).toISOString(),
+                    origin,
                     convertedFrom
                 });
             }
@@ -562,22 +609,47 @@ export class NotebookManager {
     }
 
     /**
-     * ソースファイルの追加 (Binary / ArrayBuffer 対応 & 自動決定的変換)
+     * ソースファイルの追加 (Binary / ArrayBuffer / Buffer 対応 & 自動決定的変換)
      */
     async addSourceFile(
         id: string,
         fileName: string,
-        data: ArrayBuffer | string,
-        origin?: import('../types').SourceOrigin
+        data: ArrayBuffer | Buffer | string,
+        origin?: SourceOrigin
     ): Promise<TFile> {
         const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources`);
         await this.ensureFolder(sourcesDir);
+
+        // origin が渡された場合、.origins.json を更新
+        if (origin) {
+            const originsMap = await this.readSourcesOrigins(id);
+            originsMap[fileName] = origin;
+            await this.saveSourcesOrigins(id, originsMap);
+        }
+
+        // ArrayBuffer への安全な変換ヘルパー
+        const toArrayBuffer = (d: ArrayBuffer | Buffer): ArrayBuffer => {
+            if (Buffer.isBuffer(d)) {
+                const ab = new ArrayBuffer(d.byteLength);
+                const view = new Uint8Array(ab);
+                view.set(d);
+                return ab;
+            }
+            return d;
+        };
+
+        // Node.js Buffer への変換ヘルパー
+        const toBuffer = (d: ArrayBuffer | Buffer | string): Buffer => {
+            if (typeof d === 'string') return Buffer.from(d, 'utf-8');
+            if (Buffer.isBuffer(d)) return d;
+            return Buffer.from(d);
+        };
 
         // バイナリドキュメント（Excel/PPTX/Word）の場合は自動で Markdown に決定的変換
         if (TranscriptionService.isTranscribable(fileName)) {
             try {
                 const { markdown, convertedFilename } = await TranscriptionService.transcribe(
-                    typeof data === 'string' ? Buffer.from(data, 'utf-8') : Buffer.from(data),
+                    toBuffer(data),
                     fileName
                 );
 
@@ -603,13 +675,13 @@ export class NotebookManager {
                     if (typeof data === 'string') {
                         await this.app.vault.modify(existingRaw, data);
                     } else {
-                        await this.app.vault.modifyBinary(existingRaw, data);
+                        await this.app.vault.modifyBinary(existingRaw, toArrayBuffer(data));
                     }
                 } else {
                     if (typeof data === 'string') {
                         await this.app.vault.create(rawPath, data);
                     } else {
-                        await this.app.vault.createBinary(rawPath, data);
+                        await this.app.vault.createBinary(rawPath, toArrayBuffer(data));
                     }
                 }
 
@@ -626,14 +698,14 @@ export class NotebookManager {
             if (typeof data === 'string') {
                 await this.app.vault.modify(existing, data);
             } else {
-                await this.app.vault.modifyBinary(existing, data);
+                await this.app.vault.modifyBinary(existing, toArrayBuffer(data));
             }
             return existing;
         } else {
             if (typeof data === 'string') {
                 return await this.app.vault.create(filePath, data);
             } else {
-                return await this.app.vault.createBinary(filePath, data);
+                return await this.app.vault.createBinary(filePath, toArrayBuffer(data));
             }
         }
     }
@@ -647,6 +719,55 @@ export class NotebookManager {
         if (file instanceof TFile) {
             await this.app.vault.delete(file);
         }
+
+        // origins からも削除
+        const originsMap = await this.readSourcesOrigins(id);
+        if (originsMap[fileName]) {
+            delete originsMap[fileName];
+            await this.saveSourcesOrigins(id, originsMap);
+        }
+    }
+
+    /**
+     * バインドされた外部フォルダから指定されたファイルを一括読み込み・変換格納 (Extract)
+     */
+    async extractFromBoundFolder(
+        notebookId: string,
+        relativeFilePaths: string[]
+    ): Promise<{ importedCount: number; errors: string[] }> {
+        const metadata = await this.getNotebookMetadata(notebookId);
+        const basePath = metadata?.boundFolderPath || this.settings.sharedFolderBasePath;
+        if (!basePath) {
+            throw new Error('バインド外部フォルダまたは共有フォルダ起点パスが設定されていません');
+        }
+
+        let importedCount = 0;
+        const errors: string[] = [];
+
+        for (const relPath of relativeFilePaths) {
+            try {
+                const { buffer, fileName, mtime } = await BoundFolderReader.readFile(basePath, relPath);
+                const relDir = path.dirname(relPath);
+                const relativeFolder = (relDir && relDir !== '.') ? relDir : undefined;
+
+                const origin: SourceOrigin = {
+                    connectorId: 'cifs',
+                    remoteUrl: `file://${path.resolve(basePath, relPath)}`,
+                    remoteId: path.resolve(basePath, relPath),
+                    relativeFolder,
+                    remoteVersion: mtime,
+                    lastSyncedAt: new Date().toISOString()
+                };
+
+                await this.addSourceFile(notebookId, fileName, buffer, origin);
+                importedCount++;
+            } catch (e: any) {
+                console.error(`Failed to extract ${relPath}:`, e);
+                errors.push(`${relPath}: ${e.message}`);
+            }
+        }
+
+        return { importedCount, errors };
     }
 
     /**

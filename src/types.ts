@@ -26,6 +26,7 @@ export interface NotebookMetadata {
     description: string;
     linkedNotebookIds?: string[];
     activeSessionId?: string;
+    boundFolderPath?: string; // 🗄️ Notebook単位のバインド外部フォルダ絶対パス (CIFS/ローカル共有)
     systemId?: string; // 後方互換用
     templateId?: string; // 後方互換用
 }
@@ -60,6 +61,7 @@ export interface SourceOrigin {
     connectorId: 'box' | 'confluence' | 'cifs' | 'web';
     remoteUrl: string;       // ブラウザで開けるURL (出典表示・再訪用)
     remoteId: string;        // Box file_id / Confluence pageId / CIFS絶対パス
+    relativeFolder?: string; // バインド起点からの相対フォルダ（例: "2024/NDPシステム_基盤更改"）
     remoteVersion?: string;  // etag / contentVersion / mtime (差分検知用)
     lastSyncedAt: string;    // 最終同期日時
 }

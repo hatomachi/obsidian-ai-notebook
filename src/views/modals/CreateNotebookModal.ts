@@ -8,6 +8,7 @@ export class CreateNotebookModal extends Modal {
 
     title: string = '';
     description: string = '';
+    boundFolderPath: string = '';
     selectedLinkedIds: Set<string> = new Set();
 
     constructor(app: App, notebookManager: NotebookManager, onCreated: (notebook: NotebookMetadata) => void) {
@@ -36,6 +37,15 @@ export class CreateNotebookModal extends Modal {
             .addTextArea(text => text
                 .setPlaceholder('例: リリース背景、変更点、切り戻し基準をまとめる')
                 .onChange(val => this.description = val));
+
+        // 外部バインドフォルダの設定 (任意)
+        const defaultShared = this.notebookManager.settings.sharedFolderBasePath || '';
+        new Setting(contentEl)
+            .setName('🗄️ バインド外部フォルダ (任意)')
+            .setDesc('ファイルサーバーやCIFS共有の絶対パスを指定すると、AI探索や一括取り込みが可能になります')
+            .addText(text => text
+                .setPlaceholder(defaultShared ? `例: ${defaultShared}/2026_案件` : '例: /Volumes/share/部内案件会議')
+                .onChange(val => this.boundFolderPath = val));
 
         // 参照コンテキスト (Linked Notebooks) の選択
         const allNotebooks = await this.notebookManager.getAllNotebooks();
@@ -86,7 +96,8 @@ export class CreateNotebookModal extends Modal {
                         const notebook = await this.notebookManager.createNotebook(
                             this.title,
                             this.description,
-                            Array.from(this.selectedLinkedIds)
+                            Array.from(this.selectedLinkedIds),
+                            this.boundFolderPath.trim() || undefined
                         );
                         new Notice(`ノートブック "${notebook.title}" を作成しました`);
                         this.onCreated(notebook);

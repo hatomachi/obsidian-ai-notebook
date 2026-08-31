@@ -3,6 +3,8 @@ import type AINotebookPlugin from '../main';
 import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession } from '../types';
 import { ArtifactModal } from './modals/ArtifactModal';
 import { LinkNotebookModal } from './modals/LinkNotebookModal';
+import { BoundFolderExplorerModal } from './modals/BoundFolderExplorerModal';
+import { BoundFolderReader } from '../services/BoundFolderReader';
 import { AgentFactory } from '../adapters/AgentFactory';
 import * as path from 'path';
 
@@ -235,7 +237,72 @@ export class AINotebookDetailView extends ItemView {
         }
 
         // ==========================================
-        // 2. 直接投入ファイル (Direct Inputs)
+        // 2. バインド外部フォルダ (Bound Folder & AI Discovery)
+        // ==========================================
+        const boundSection = panel.createDiv({ cls: 'ai-notebook-bound-section' });
+        const boundHeader = boundSection.createDiv({ cls: 'ai-notebook-panel-header' });
+        boundHeader.createEl('h3', { text: '🗄️ バインド外部フォルダ' });
+
+        const effectiveBoundPath = this.metadata?.boundFolderPath || this.plugin.settings.sharedFolderBasePath || '';
+        const isCustomBound = !!this.metadata?.boundFolderPath;
+
+        const configBoundBtn = boundHeader.createEl('button', {
+            cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-xs',
+            text: isCustomBound ? '変更/解除' : 'バインド設定'
+        });
+        configBoundBtn.onclick = async () => {
+            if (!this.notebookId) return;
+            const currentVal = this.metadata?.boundFolderPath || '';
+            const newVal = prompt(
+                'Notebookにバインドする外部フォルダ（CIFS共有やローカルディレクトリ）の絶対パスを入力してください（空欄で解除）:',
+                currentVal || this.plugin.settings.sharedFolderBasePath || ''
+            );
+            if (newVal !== null) {
+                const trimmed = newVal.trim();
+                await this.plugin.notebookManager.updateNotebookMetadata(this.notebookId, {
+                    boundFolderPath: trimmed || undefined
+                });
+                new Notice(trimmed ? '外部フォルダをバインドしました' : 'バインドを解除しました');
+                await this.refresh(false);
+            }
+        };
+
+        const boundBody = boundSection.createDiv({ cls: 'ai-notebook-bound-body' });
+        if (effectiveBoundPath) {
+            const pathCard = boundBody.createDiv({ cls: 'ai-notebook-bound-path-card' });
+            const iconSpan = pathCard.createSpan({ cls: 'ai-notebook-bound-icon' });
+            setIcon(iconSpan, 'folder-symlink');
+            
+            const pathText = pathCard.createSpan({ 
+                text: isCustomBound ? effectiveBoundPath : `${effectiveBoundPath} (グローバル設定)`,
+                cls: 'ai-notebook-bound-path'
+            });
+            pathText.setAttribute('title', effectiveBoundPath);
+
+            const exploreBtn = boundBody.createEl('button', {
+                cls: 'ai-notebook-btn ai-notebook-btn-primary ai-notebook-btn-xs ai-notebook-btn-block',
+                text: '📁 フォルダツリーから探索・一括取込 (Extract)'
+            });
+            exploreBtn.onclick = () => {
+                if (!this.notebookId) return;
+                new BoundFolderExplorerModal(
+                    this.app,
+                    this.plugin.notebookManager,
+                    this.notebookId,
+                    effectiveBoundPath,
+                    async () => {
+                        await this.refresh(true);
+                    }
+                ).open();
+            };
+        } else {
+            const emptyBound = boundBody.createDiv({ cls: 'ai-notebook-empty-bound' });
+            emptyBound.createDiv({ text: '外部フォルダは未バインドです', cls: 'ai-notebook-empty-text' });
+            emptyBound.createDiv({ text: '「バインド設定」からファイルサーバー等のパスを登録できます', cls: 'ai-notebook-hint-text' });
+        }
+
+        // ==========================================
+        // 3. 直接投入ファイル (Direct Inputs)
         // ==========================================
         const sourceSection = panel.createDiv({ cls: 'ai-notebook-source-section' });
         const sourceHeader = sourceSection.createDiv({ cls: 'ai-notebook-panel-header' });
@@ -276,44 +343,6 @@ export class AINotebookDetailView extends ItemView {
             }
         };
 
-        // 共有フォルダ (CIFS) からのクイックインポートボタン（設定されている場合）
-        if (this.plugin.settings.sharedFolderBasePath) {
-            const cifsBtn = sourceSection.createEl('button', {
-                cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-xs',
-                text: '🗄️ 共有フォルダから追加'
-            });
-            cifsBtn.style.width = '100%';
-            cifsBtn.style.marginTop = '6px';
-            cifsBtn.onclick = async () => {
-                const basePath = this.plugin.settings.sharedFolderBasePath;
-                const inputRel = prompt(`共有フォルダ [${basePath}] 内のファイル名または相対パスを入力してください:`);
-                if (!inputRel || !inputRel.trim() || !this.notebookId) return;
-
-                const fs = require('fs');
-                const path = require('path');
-                const targetPath = path.resolve(basePath, inputRel.trim());
-
-                if (fs.existsSync(targetPath)) {
-                    try {
-                        const buffer = fs.readFileSync(targetPath);
-                        const fileName = path.basename(targetPath);
-                        await this.plugin.notebookManager.addSourceFile(this.notebookId, fileName, buffer, {
-                            connectorId: 'cifs',
-                            remoteUrl: `file://${targetPath}`,
-                            remoteId: targetPath,
-                            lastSyncedAt: new Date().toISOString()
-                        });
-                        new Notice(`共有フォルダから「${fileName}」を取り込みました`);
-                        await this.refresh();
-                    } catch (e: any) {
-                        new Notice(`ファイルの読み込みに失敗しました: ${e.message}`);
-                    }
-                } else {
-                    new Notice(`ファイルが見つかりません: ${targetPath}`);
-                }
-            };
-        }
-
         // ソース一覧リスト
         const sourceList = sourceSection.createDiv({ cls: 'ai-notebook-source-list' });
         if (this.sources.length === 0) {
@@ -331,6 +360,13 @@ export class AINotebookDetailView extends ItemView {
                 const nameWrap = item.createDiv({ cls: 'ai-notebook-source-name-wrap' });
                 const nameSpan = nameWrap.createSpan({ text: src.name, cls: 'ai-notebook-source-name' });
                 nameSpan.setAttribute('title', src.name);
+
+                // 出典元フォルダのバッジ表示 (例: 📁 2024/A社_基幹刷新)
+                if (src.origin?.relativeFolder) {
+                    const folderBadge = nameWrap.createSpan({ cls: 'ai-notebook-badge-origin-folder' });
+                    folderBadge.setText(`📁 ${src.origin.relativeFolder}`);
+                    folderBadge.setAttribute('title', `出典フォルダ: ${src.origin.relativeFolder}`);
+                }
 
                 if (src.convertedFrom) {
                     const badge = nameWrap.createSpan({ cls: 'ai-notebook-badge-converted' });
@@ -812,6 +848,18 @@ export class AINotebookDetailView extends ItemView {
             // リンクされた参照ノートブック群の成果物を動的に集約
             const linkedContexts = await this.plugin.notebookManager.getLinkedContexts(this.notebookId);
 
+            // バインドされた外部フォルダのツリー概要を取得 (AI探索・提案用・実OSパス秘匿)
+            let boundFolderTreeText: string | undefined = undefined;
+            const effectiveBoundPath = this.metadata?.boundFolderPath || this.plugin.settings.sharedFolderBasePath;
+            if (effectiveBoundPath && BoundFolderReader.isValidDirectory(effectiveBoundPath)) {
+                try {
+                    const tree = await BoundFolderReader.listTree(effectiveBoundPath, 4);
+                    boundFolderTreeText = BoundFolderReader.formatTreeForAgent(tree);
+                } catch (treeErr) {
+                    console.warn('[AI Notebook] Failed to scan bound folder for prompt:', treeErr);
+                }
+            }
+
             let streamedOutput = '';
             const onStdoutChunk = (chunk: string) => {
                 streamedOutput += chunk;
@@ -837,6 +885,7 @@ export class AINotebookDetailView extends ItemView {
                 commandPath: commandPath,
                 maxTurns: this.plugin.settings.maxTurns || 15,
                 linkedContexts: linkedContexts,
+                boundFolderTreeText: boundFolderTreeText,
                 chatHistory: this.currentSession.messages.filter(m => m.id !== loadingMsgId),
                 onStdoutChunk: onStdoutChunk,
                 abortSignal: this.abortController.signal

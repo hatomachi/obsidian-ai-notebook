@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit && node esbuild.config.mjs production",
+    "test": "node -e 'require(\"esbuild\").buildSync({entryPoints: [\"tests/BoundFolderReader.test.ts\", \"tests/integration-extract.test.ts\"], outdir: \".build\", outExtension: {\".js\": \".cjs\"}, bundle: true, platform: \"node\"}); require(\"./.build/BoundFolderReader.test.cjs\"); require(\"./.build/integration-extract.test.cjs\");'",
     "generate-fixtures": "node -e 'require(\"esbuild\").buildSync({entryPoints: [\"scripts/generate-mock-fixtures.ts\"], outfile: \".build/gen-fixtures.cjs\", bundle: true, platform: \"node\"}); require(\"./.build/gen-fixtures.cjs\");'"
   },
   "keywords": [
