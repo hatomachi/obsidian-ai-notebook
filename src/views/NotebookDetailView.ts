@@ -23,6 +23,10 @@ export class AINotebookDetailView extends ItemView {
     currentSession: ChatSession | null = null;
     chatHistory: ChatMessage[] = [];
 
+    // エージェント実行・キャンセル状態
+    isExecuting: boolean = false;
+    abortController: AbortController | null = null;
+
     onBackToGalleryHandler?: () => void;
     onSendMessageHandler?: (prompt: string) => Promise<void>;
 
@@ -443,10 +447,24 @@ export class AINotebookDetailView extends ItemView {
             const draftBtn = actionsBar.createEl('button', { cls: 'ai-notebook-btn ai-notebook-btn-primary ai-notebook-btn-sm' });
             setIcon(draftBtn, 'sparkles');
             const linkedNames = this.linkedNotebooks.map(n => n.title).join(', ');
-            draftBtn.createSpan({ text: ` 🚀 参照コンテキストを踏まえて初稿（ドラフト）を生成` });
+            draftBtn.createSpan({ text: ` 🚀 ドラフト生成` });
             draftBtn.setAttribute('title', `参照中: ${linkedNames}`);
             draftBtn.onclick = async () => {
-                const prompt = `インプットソースの内容と、リンクされた参照コンテキスト（${linkedNames}）の仕様・ルール・サンプルをもとに、完成度の高い成果物初稿（ドラフト）を作成してください。注意事項や章立て、ロールバック基準も具体的に記述してください。`;
+                if (this.isExecuting) return;
+                const prompt = `インプットソースの内容と、リンクされた参照コンテキスト（${linkedNames}）の仕様・ルール・サンプルをもとに、完成度の高い成果物初稿（ドラフト）を artifacts/ 配下に直接作成してください。注意事項や章立て、ロールバック基準も具体的に記述してください。`;
+                await this.handleSendMessage(prompt);
+            };
+
+            const reviewBtn = actionsBar.createEl('button', { cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-sm' });
+            setIcon(reviewBtn, 'check-square');
+            reviewBtn.createSpan({ text: ` 🔍 成果物レビュー実行` });
+            reviewBtn.setAttribute('title', 'リンクされた観点・ルールに照らして成果物をレビューし、指摘ファイルを出力');
+            reviewBtn.onclick = async () => {
+                if (this.isExecuting) return;
+                const artList = this.artifacts.map(a => a.id).join(', ');
+                const targetDesc = artList ? `対象成果物 (${artList})` : '既存成果物';
+                const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+                const prompt = `リンクされた参照コンテキストの仕様・作成ルール・チェック観点に照らし、${targetDesc} を詳細に点検してください。指摘結果は artifacts/review_result_${today}.md として出力してください（各指摘に 章 / 観点 / 指摘内容 / 対応状況 [ ] を含めること）。`;
                 await this.handleSendMessage(prompt);
             };
         } else {
@@ -454,7 +472,8 @@ export class AINotebookDetailView extends ItemView {
             setIcon(summarizeBtn, 'sparkles');
             summarizeBtn.createSpan({ text: ' 💡 インプットの要約・分析レポートを生成' });
             summarizeBtn.onclick = async () => {
-                await this.handleSendMessage('投入されたインプットソースの内容を詳細に分析し、主要なポイントを整理した要約レポートを作成してください。');
+                if (this.isExecuting) return;
+                await this.handleSendMessage('投入されたインプットソースの内容を詳細に分析し、主要なポイントを整理した要約レポートを artifacts/ 配下に作成してください。');
             };
         }
 
@@ -465,36 +484,55 @@ export class AINotebookDetailView extends ItemView {
         // 入力フォーム
         const inputArea = panel.createDiv({ cls: 'ai-notebook-chat-input-area' });
         const textarea = inputArea.createEl('textarea', {
-            placeholder: this.linkedNotebooks.length > 0
-                ? '参照コンテキストをもとにドキュメント作成・修正・レビュー指示...'
-                : 'インプットをもとに会話・成果物作成指示...',
+            placeholder: this.isExecuting
+                ? 'AIエージェントが実行中です... 完了するか中止するまでお待ちください'
+                : (this.linkedNotebooks.length > 0
+                    ? '参照コンテキストをもとにドキュメント作成・修正・レビュー指示...'
+                    : 'インプットをもとに会話・成果物作成指示...'),
             cls: 'ai-notebook-chat-textarea'
         });
 
-        const sendBtn = inputArea.createEl('button', { cls: 'ai-notebook-btn ai-notebook-btn-primary' });
-        setIcon(sendBtn, 'send');
-        sendBtn.setAttribute('title', '送信');
+        if (this.isExecuting) {
+            textarea.disabled = true;
+            textarea.addClass('is-disabled');
 
-        const doSend = async () => {
-            const prompt = textarea.value.trim();
-            if (!prompt) return;
-
-            textarea.value = '';
-            
-            if (this.onSendMessageHandler) {
-                await this.onSendMessageHandler(prompt);
-            }
-        };
-
-        sendBtn.onclick = doSend;
-        textarea.onkeydown = (e) => {
-            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || !e.shiftKey)) {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    doSend();
+            // 中止ボタン
+            const abortBtn = inputArea.createEl('button', { cls: 'ai-notebook-btn ai-notebook-btn-danger' });
+            setIcon(abortBtn, 'square');
+            abortBtn.createSpan({ text: ' 中止' });
+            abortBtn.setAttribute('title', 'AIエージェントの実行を中止');
+            abortBtn.onclick = () => {
+                if (this.abortController) {
+                    this.abortController.abort();
+                    new Notice('AIエージェントの中止リクエストを送信しました');
                 }
-            }
-        };
+            };
+        } else {
+            const sendBtn = inputArea.createEl('button', { cls: 'ai-notebook-btn ai-notebook-btn-primary' });
+            setIcon(sendBtn, 'send');
+            sendBtn.setAttribute('title', '送信 (Ctrl+Enter / Cmd+Enter / Enter)');
+
+            const doSend = async () => {
+                const prompt = textarea.value.trim();
+                if (!prompt) return;
+
+                textarea.value = '';
+                
+                if (this.onSendMessageHandler) {
+                    await this.onSendMessageHandler(prompt);
+                }
+            };
+
+            sendBtn.onclick = doSend;
+            textarea.onkeydown = (e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || !e.shiftKey)) {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        doSend();
+                    }
+                }
+            };
+        }
     }
 
     /**
@@ -551,9 +589,30 @@ export class AINotebookDetailView extends ItemView {
                 const loadingDiv = textContainer.createDiv({ cls: 'ai-notebook-chat-loading' });
                 const spinner = loadingDiv.createSpan({ cls: 'ai-notebook-chat-spinner' });
                 setIcon(spinner, 'loader');
-                loadingDiv.createSpan({ text: ` ${msg.text}` });
+                loadingDiv.createSpan({ text: ` ${msg.text}`, cls: 'ai-notebook-chat-loading-text' });
             } else {
                 await MarkdownRenderer.render(this.app, msg.text, textContainer, '', this);
+            }
+
+            // 生成来歴 (Provenance) の表示
+            if (msg.artifactsGenerated && msg.artifactsGenerated.length > 0) {
+                const provDiv = msgBubble.createDiv({ cls: 'ai-notebook-chat-provenance' });
+                const artIcon = provDiv.createSpan({ cls: 'ai-notebook-prov-icon' });
+                setIcon(artIcon, 'file-check');
+                provDiv.createSpan({ 
+                    text: ` 成果物作成/更新: ${msg.artifactsGenerated.join(', ')}`,
+                    cls: 'ai-notebook-prov-text' 
+                });
+            }
+
+            if (msg.linkedNotebookIds && msg.linkedNotebookIds.length > 0) {
+                const provLinkDiv = msgBubble.createDiv({ cls: 'ai-notebook-chat-provenance ai-notebook-chat-prov-links' });
+                const linkIcon = provLinkDiv.createSpan({ cls: 'ai-notebook-prov-icon' });
+                setIcon(linkIcon, 'link');
+                provLinkDiv.createSpan({ 
+                    text: ` 参照: ${msg.linkedNotebookIds.length} 件のナレッジノート`,
+                    cls: 'ai-notebook-prov-text' 
+                });
             }
         }
 
@@ -593,21 +652,35 @@ export class AINotebookDetailView extends ItemView {
             artifactList.createDiv({ text: '生成された成果物がありません', cls: 'ai-notebook-empty-text' });
         } else {
             for (const art of this.artifacts) {
-                const card = artifactList.createDiv({ cls: 'ai-notebook-artifact-card' });
+                const isReview = art.id.toLowerCase().startsWith('review_') || art.title.includes('レビュー') || art.title.toLowerCase().includes('review');
+                
+                const card = artifactList.createDiv({ 
+                    cls: `ai-notebook-artifact-card ${isReview ? 'ai-notebook-artifact-card-review' : ''}` 
+                });
                 
                 const cardHeader = card.createDiv({ cls: 'ai-notebook-artifact-card-header' });
                 const iconSpan = cardHeader.createSpan({ cls: 'ai-notebook-artifact-card-icon' });
-                setIcon(iconSpan, 'file-text');
+                setIcon(iconSpan, isReview ? 'check-square' : 'file-text');
 
-                cardHeader.createEl('h4', { text: art.title, cls: 'ai-notebook-artifact-card-title' });
+                const titleSpan = cardHeader.createEl('h4', { text: art.title, cls: 'ai-notebook-artifact-card-title' });
+                if (isReview) {
+                    const badge = cardHeader.createSpan({ text: 'レビュー指摘', cls: 'ai-notebook-review-badge' });
+                }
 
                 card.onclick = () => {
                     if (!this.notebookId) return;
                     const file = this.app.vault.getAbstractFileByPath(art.path);
                     if (file instanceof TFile) {
-                        new ArtifactModal(this.app, this.plugin.notebookManager, this.notebookId, file, async () => {
-                            await this.refresh();
-                        }).open();
+                        new ArtifactModal(
+                            this.app, 
+                            this.plugin.notebookManager, 
+                            this.notebookId, 
+                            file, 
+                            async () => {
+                                await this.refresh();
+                            },
+                            this.isExecuting
+                        ).open();
                     }
                 };
             }
@@ -659,6 +732,10 @@ export class AINotebookDetailView extends ItemView {
         this.chatHistory = this.currentSession.messages;
 
         await this.plugin.notebookManager.saveChatSession(this.notebookId, this.currentSession);
+        
+        // 実行状態をONにしてUI更新（中止ボタン表示等）
+        this.isExecuting = true;
+        this.abortController = new AbortController();
         await this.refresh(false);
 
         try {
@@ -668,11 +745,10 @@ export class AINotebookDetailView extends ItemView {
                 vaultBasePath = adapter.getBasePath();
             }
 
-            const sourcesRelative = `${this.plugin.settings.rootDir}/notebooks/${this.notebookId}/sources`;
-            const artifactsRelative = `${this.plugin.settings.rootDir}/notebooks/${this.notebookId}/artifacts`;
-
-            const contextDirAbs = path.join(vaultBasePath, sourcesRelative);
-            const outputDirAbs = path.join(vaultBasePath, artifactsRelative);
+            const notebookRelative = `${this.plugin.settings.rootDir}/notebooks/${this.notebookId}`;
+            const notebookDirAbs = path.join(vaultBasePath, notebookRelative);
+            const sourcesDirAbs = path.join(notebookDirAbs, 'sources');
+            const artifactsDirAbs = path.join(notebookDirAbs, 'artifacts');
 
             const agentAdapter = AgentFactory.getAdapter(this.plugin.settings);
             const commandPath = AgentFactory.getCommandPath(this.plugin.settings);
@@ -680,49 +756,109 @@ export class AINotebookDetailView extends ItemView {
             // リンクされた参照ノートブック群の成果物を動的に集約
             const linkedContexts = await this.plugin.notebookManager.getLinkedContexts(this.notebookId);
 
-            // 3. AI エージェントの実行 (対話履歴を渡す)
+            let streamedOutput = '';
+            const onStdoutChunk = (chunk: string) => {
+                streamedOutput += chunk;
+                const targetMsg = this.currentSession?.messages.find(m => m.id === loadingMsgId);
+                if (targetMsg) {
+                    targetMsg.text = streamedOutput || '思考中... (AIエージェント実行中)';
+                }
+                const loadingTextEl = this.containerEl.querySelector('.ai-notebook-chat-loading-text');
+                if (loadingTextEl) {
+                    loadingTextEl.textContent = streamedOutput.length > 250 
+                        ? '...' + streamedOutput.slice(-250) 
+                        : streamedOutput;
+                }
+            };
+
+            // 3. AI エージェントの実行 (ノートブックルートを作業ディレクトリとして渡す)
             const result = await agentAdapter.executePrompt(userPrompt, {
-                contextDir: contextDirAbs,
-                outputDir: outputDirAbs,
+                notebookDir: notebookDirAbs,
+                sourcesDir: sourcesDirAbs,
+                artifactsDir: artifactsDirAbs,
+                contextDir: sourcesDirAbs,
+                outputDir: artifactsDirAbs,
                 commandPath: commandPath,
+                maxTurns: this.plugin.settings.maxTurns || 15,
                 linkedContexts: linkedContexts,
-                chatHistory: this.currentSession.messages
+                chatHistory: this.currentSession.messages.filter(m => m.id !== loadingMsgId),
+                onStdoutChunk: onStdoutChunk,
+                abortSignal: this.abortController.signal
             });
+
+            // 4. 成果物差分の集計
+            const allArtifactsTouched = [
+                ...(result.artifactsCreated || []),
+                ...(result.artifactsModified || [])
+            ];
+            const uniqueTouched = Array.from(new Set(allArtifactsTouched));
 
             // 仮ローディングメッセージの置換
             const lastIdx = this.currentSession.messages.findIndex(m => m.id === loadingMsgId);
+            const finalAgentMsg: ChatMessage = {
+                id: loadingMsgId,
+                sender: 'agent',
+                text: result.text || '(AIエージェントの処理が完了しました)',
+                timestamp: new Date().toISOString(),
+                artifactsGenerated: uniqueTouched.length > 0 ? uniqueTouched : undefined,
+                linkedNotebookIds: this.metadata?.linkedNotebookIds && this.metadata.linkedNotebookIds.length > 0
+                    ? [...this.metadata.linkedNotebookIds]
+                    : undefined
+            };
+
             if (lastIdx !== -1) {
-                this.currentSession.messages[lastIdx].text = result.text || '(AIからの応答本文が空です)';
+                this.currentSession.messages[lastIdx] = finalAgentMsg;
             } else {
-                this.currentSession.messages.push({
-                    id: Date.now().toString(),
-                    sender: 'agent',
-                    text: result.text || '(AIからの応答本文が空です)',
-                    timestamp: new Date().toISOString()
-                });
+                this.currentSession.messages.push(finalAgentMsg);
             }
 
-            // 4. レスポンス内の Markdown Code Block から成果物ファイルの自動抽出・保存
-            const codeBlockRegex = /```markdown:([^\n]+)\n([\s\S]*?)```/g;
-            let match;
-            while ((match = codeBlockRegex.exec(result.text)) !== null) {
-                const title = match[1].trim();
-                const content = match[2].trim();
-                await this.plugin.notebookManager.addArtifactFile(this.notebookId, title, content);
-                new Notice(`成果物 "${title}" が生成されました`);
+            // 5. 差分検出時の通知および後方互換コードブロック抽出
+            if (uniqueTouched.length > 0) {
+                for (const artName of uniqueTouched) {
+                    new Notice(`成果物 "${artName}" が作成/更新されました`);
+                }
+            } else {
+                // 差分が検出されなかった場合の後方互換フォールバック（コードブロック抽出）
+                const fallbackCreated: string[] = [];
+                const codeBlockRegex = /```(?:markdown:([^\n]+)|([a-zA-Z0-9_\-.]+?\.md))\n([\s\S]*?)```/g;
+                let match;
+                while ((match = codeBlockRegex.exec(result.text)) !== null) {
+                    const title = (match[1] || match[2] || '').trim();
+                    const content = match[3].trim();
+                    if (title) {
+                        const cleanTitle = title.endsWith('.md') ? title.slice(0, -3) : title;
+                        await this.plugin.notebookManager.addArtifactFile(this.notebookId, cleanTitle, content);
+                        fallbackCreated.push(`${cleanTitle}.md`);
+                        new Notice(`成果物 "${cleanTitle}" が生成されました`);
+                    }
+                }
+
+                if (fallbackCreated.length > 0) {
+                    finalAgentMsg.artifactsGenerated = fallbackCreated;
+                }
             }
 
             await this.plugin.notebookManager.saveChatSession(this.notebookId, this.currentSession);
         } catch (error: any) {
             console.error('[AI Notebook] Agent Execution Error:', error);
             const lastIdx = this.currentSession.messages.findIndex(m => m.id === loadingMsgId);
+            const isCancelled = error.message && (error.message.includes('中止') || error.message.includes('キャンセル'));
+            const errorText = isCancelled
+                ? '⏹ AIエージェントの実行がユーザーにより中止されました。'
+                : `⚠️ AIエージェント実行エラー: ${error.message || error}`;
+
             if (lastIdx !== -1) {
-                this.currentSession.messages[lastIdx].text = `⚠️ AIエージェント実行エラー: ${error.message || error}`;
+                this.currentSession.messages[lastIdx].text = errorText;
+            }
+            if (isCancelled) {
+                new Notice('処理を中止しました');
             }
             await this.plugin.notebookManager.saveChatSession(this.notebookId, this.currentSession);
         } finally {
+            this.isExecuting = false;
+            this.abortController = null;
             this.chatHistory = this.currentSession ? this.currentSession.messages : [];
-            await this.refresh(false);
+            await this.refresh(true);
         }
     }
 

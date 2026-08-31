@@ -6,24 +6,35 @@ export class ArtifactModal extends Modal {
     notebookId: string;
     artifactFile: TFile;
     onSaved?: () => void;
+    isAgentExecuting: boolean;
 
     content: string = '';
     isEditing: boolean = false;
+    openedMtime: number = 0;
     textareaEl: HTMLTextAreaElement | null = null;
     renderComponent: Component = new Component();
 
-    constructor(app: App, notebookManager: NotebookManager, notebookId: string, artifactFile: TFile, onSaved?: () => void) {
+    constructor(
+        app: App, 
+        notebookManager: NotebookManager, 
+        notebookId: string, 
+        artifactFile: TFile, 
+        onSaved?: () => void,
+        isAgentExecuting: boolean = false
+    ) {
         super(app);
         this.notebookManager = notebookManager;
         this.notebookId = notebookId;
         this.artifactFile = artifactFile;
         this.onSaved = onSaved;
+        this.isAgentExecuting = isAgentExecuting;
     }
 
     async onOpen(): Promise<void> {
         this.renderComponent.load();
         this.modalEl.addClass('ai-notebook-artifact-modal');
         this.content = await this.app.vault.read(this.artifactFile);
+        this.openedMtime = this.artifactFile.stat.mtime;
         this.isEditing = false;
         await this.renderModal();
     }
@@ -31,6 +42,13 @@ export class ArtifactModal extends Modal {
     private async renderModal(): Promise<void> {
         const { contentEl } = this;
         contentEl.empty();
+
+        // エージェント実行中の警告バナー
+        if (this.isAgentExecuting) {
+            const warningBanner = contentEl.createDiv({ cls: 'ai-notebook-executing-banner' });
+            setIcon(warningBanner.createSpan({ cls: 'ai-notebook-banner-icon' }), 'alert-triangle');
+            warningBanner.createSpan({ text: ' AIエージェントが現在バックグラウンドで実行中です。ファイルの保存時に競合が発生する可能性があります。' });
+        }
 
         // モーダルヘッダー
         const header = contentEl.createDiv({ cls: 'ai-notebook-artifact-header' });
@@ -79,7 +97,7 @@ export class ArtifactModal extends Modal {
             new Notice('成果物をクリップボードにコピーしました');
         };
 
-        // 保存ボタン
+        // 保存ボタン（競合検知付き）
         const saveBtn = actions.createEl('button', { cls: 'ai-notebook-btn ai-notebook-btn-primary' });
         setIcon(saveBtn, 'save');
         saveBtn.createSpan({ text: ' 保存' });
@@ -87,6 +105,28 @@ export class ArtifactModal extends Modal {
             if (this.isEditing && this.textareaEl) {
                 this.content = this.textareaEl.value;
             }
+
+            // mtime による競合チェック
+            const currentAbstract = this.app.vault.getAbstractFileByPath(this.artifactFile.path);
+            if (currentAbstract instanceof TFile && currentAbstract.stat.mtime > this.openedMtime) {
+                const reloadConfirm = confirm(
+                    `⚠️ 【編集競合の警告】\n\nこの成果物ファイルはモーダルを開いた後に外部（AIエージェント等）によって更新されています。\n\n` +
+                    `[OK] 最新の内容を再読み込みする（現在の手動編集内容は破棄されます）\n` +
+                    `[キャンセル] 上書き保存を中止して、編集内容を確認・コピーする`
+                );
+
+                if (reloadConfirm) {
+                    this.content = await this.app.vault.read(currentAbstract);
+                    this.openedMtime = currentAbstract.stat.mtime;
+                    this.isEditing = false;
+                    await this.renderModal();
+                    new Notice('最新の内容を再読み込みしました');
+                    return;
+                } else {
+                    return; // 保存を中断
+                }
+            }
+
             await this.app.vault.modify(this.artifactFile, this.content);
             new Notice(`成果物 "${this.artifactFile.basename}" を保存しました`);
             if (this.onSaved) this.onSaved();

@@ -113,7 +113,8 @@
 
 ## 4. AI エージェント抽象化構造 (Agent Adapter Architecture)
 
-Antigravity CLI / Claude Code CLI 等の各種CLIツールと連携。
+Antigravity CLI / Claude Code CLI 等の各種自律エージェントCLIツールと連携。
+ノートブックルートを作業ディレクトリ（`cwd`）としてエージェントに渡し、`artifacts/` 配下の成果物を直接作成・部分編集（Write/Edit）させます。
 
 ```typescript
 export interface LinkedContext {
@@ -124,17 +125,21 @@ export interface LinkedContext {
 }
 
 export interface AgentOptions {
-    contextDir: string;        // 当該ノートブック sources/ フォルダの絶対パス
-    outputDir: string;         // 当該ノートブック artifacts/ フォルダの絶対パス
+    notebookDir: string;       // 当該ノートブックルートの絶対パス (CLI cwd)
+    sourcesDir: string;        // 当該ノートブック sources/ フォルダの絶対パス
+    artifactsDir: string;      // 当該ノートブック artifacts/ フォルダの絶対パス
     commandPath: string;       // agy / claude の実行パス
-    directFiles?: { name: string; content: string }[];
+    maxTurns?: number;         // ターン上限（暴走防止）
     linkedContexts?: LinkedContext[];
     chatHistory?: ChatMessage[]; // 直近の対話履歴（マルチターン文脈）
+    onStdoutChunk?: (chunk: string) => void; // ストリーミングコールバック
+    abortSignal?: AbortSignal;               // キャンセル用シグナル
 }
 
 export interface AgentResult {
     text: string;
     artifactsCreated?: string[];
+    artifactsModified?: string[];
 }
 
 export interface AIAgentAdapter {
@@ -149,8 +154,12 @@ export interface AIAgentAdapter {
 ## 5. 段階的開発計画 (Phased Implementation Plan)
 
 - **Phase 1**: コンセプト・設計仕様・AGENTS.md・タスク管理の整備 (Done)
-- **Phase 2**: データモデル拡張 (`linked_notebook_ids` 対応) & 初期サンプルNotebookの移行
-- **Phase 3**: AgentAdapter コンテキスト動的展開エンジンの刷新
-- **Phase 4**: 3カラム UI（参照ノートブック選択・リンク・ジャンプ）の実装
-- **Phase 5**: 検証用 Vault での動作検証・ビルド確認・ドキュメント作成
+- **Phase 2**: データモデル拡張 (`linked_notebook_ids` 対応) & ナレッジ再帰育成アーキテクチャ (Done)
+- **Phase 3**: エージェント直接編集モデルへの移行 (Done)
+  - CLI `cwd` のノートブックルート化と自動編集権限付与 (`--permission-mode acceptEdits` / `--mode accept-edits`)
+  - 成果物の段階的作成・部分修正および mtime による編集競合防止ガード
+  - レビュー成果物（`review_*.md`）フローと識別表示
+  - イベントログ駆動型生成来歴 (Provenance) 記録
+  - `spawn` による stdout ストリーミング & 中止（キャンセル）機能
+- **Phase 4**: チーム展開・高度な目録管理 (Future Scope)
 

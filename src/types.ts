@@ -78,7 +78,8 @@ export interface ChatMessage {
     sender: 'user' | 'agent' | 'system';
     text: string;
     timestamp: string;
-    artifactsGenerated?: string[];
+    artifactsGenerated?: string[]; // 生成・更新された成果物ファイル名一覧
+    linkedNotebookIds?: string[];  // 実行時に参照していたノートブックID一覧
 }
 
 export type AIAgentType = 'antigravity' | 'claude';
@@ -89,6 +90,7 @@ export interface AINotebookSettings {
     antigravityPath: string;
     claudePath: string;
     defaultModel: string;
+    maxTurns: number;
 }
 
 export const DEFAULT_SETTINGS: AINotebookSettings = {
@@ -96,5 +98,6 @@ export const DEFAULT_SETTINGS: AINotebookSettings = {
     activeAgent: 'antigravity',
     antigravityPath: 'agy',
     claudePath: 'claude',
-    defaultModel: ''
+    defaultModel: '',
+    maxTurns: 15
 };
