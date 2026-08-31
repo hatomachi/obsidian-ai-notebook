@@ -4,6 +4,8 @@ import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSe
 import { ArtifactModal } from './modals/ArtifactModal';
 import { LinkNotebookModal } from './modals/LinkNotebookModal';
 import { BoundFolderExplorerModal } from './modals/BoundFolderExplorerModal';
+import { BindFolderModal } from './modals/BindFolderModal';
+import { TextInputModal } from './modals/TextInputModal';
 import { BoundFolderReader } from '../services/BoundFolderReader';
 import { AgentFactory } from '../adapters/AgentFactory';
 import * as path from 'path';
@@ -250,21 +252,17 @@ export class AINotebookDetailView extends ItemView {
             cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-xs',
             text: isCustomBound ? '変更/解除' : 'バインド設定'
         });
-        configBoundBtn.onclick = async () => {
+        configBoundBtn.onclick = () => {
             if (!this.notebookId) return;
-            const currentVal = this.metadata?.boundFolderPath || '';
-            const newVal = prompt(
-                'Notebookにバインドする外部フォルダ（CIFS共有やローカルディレクトリ）の絶対パスを入力してください（空欄で解除）:',
-                currentVal || this.plugin.settings.sharedFolderBasePath || ''
-            );
-            if (newVal !== null) {
-                const trimmed = newVal.trim();
-                await this.plugin.notebookManager.updateNotebookMetadata(this.notebookId, {
-                    boundFolderPath: trimmed || undefined
-                });
-                new Notice(trimmed ? '外部フォルダをバインドしました' : 'バインドを解除しました');
-                await this.refresh(false);
-            }
+            new BindFolderModal(
+                this.app,
+                this.plugin.notebookManager,
+                this.notebookId,
+                this.metadata?.boundFolderPath || '',
+                async () => {
+                    await this.refresh(false);
+                }
+            ).open();
         };
 
         const boundBody = boundSection.createDiv({ cls: 'ai-notebook-bound-body' });
@@ -445,12 +443,18 @@ export class AINotebookDetailView extends ItemView {
     async renameCurrentSession(): Promise<void> {
         if (!this.notebookId || !this.currentSessionId || !this.currentSession) return;
         const currentTitle = this.currentSession.title;
-        const newTitle = prompt('セッションの新しいタイトルを入力してください:', currentTitle);
-        if (newTitle !== null && newTitle.trim() && newTitle.trim() !== currentTitle) {
-            await this.plugin.notebookManager.updateChatSessionTitle(this.notebookId, this.currentSessionId, newTitle.trim());
-            await this.refresh(true);
-            new Notice('セッション名を変更しました');
-        }
+        new TextInputModal(
+            this.app,
+            '✏️ セッション名の変更',
+            currentTitle,
+            async (newTitle) => {
+                if (!this.notebookId || !this.currentSessionId) return;
+                await this.plugin.notebookManager.updateChatSessionTitle(this.notebookId, this.currentSessionId, newTitle);
+                await this.refresh(true);
+                new Notice('セッション名を変更しました');
+            },
+            { placeholder: 'セッション名を入力' }
+        ).open();
     }
 
     /**
@@ -728,14 +732,20 @@ export class AINotebookDetailView extends ItemView {
         addBtn.setAttribute('title', '新規成果物メモ作成');
         addBtn.onclick = async () => {
             if (!this.notebookId) return;
-            const title = prompt('成果物のタイトルを入力してください:', '新しいメモ');
-            if (title) {
-                const file = await this.plugin.notebookManager.addArtifactFile(this.notebookId, title, `# ${title}\n\n`);
-                await this.refresh();
-                new ArtifactModal(this.app, this.plugin.notebookManager, this.notebookId, file, async () => {
+            new TextInputModal(
+                this.app,
+                '📄 新規成果物メモの作成',
+                '新しいメモ',
+                async (title) => {
+                    if (!this.notebookId) return;
+                    const file = await this.plugin.notebookManager.addArtifactFile(this.notebookId, title, `# ${title}\n\n`);
                     await this.refresh();
-                }).open();
-            }
+                    new ArtifactModal(this.app, this.plugin.notebookManager, this.notebookId, file, async () => {
+                        await this.refresh();
+                    }).open();
+                },
+                { placeholder: '成果物のタイトルを入力' }
+            ).open();
         };
 
         // 成果物カード一覧
