@@ -1319,3 +1319,22 @@
     cursor: not-allowed;
     background-color: var(--background-modifier-hover);
 }
+
+.ai-notebook-source-name-wrap {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+}
+
+.ai-notebook-badge-converted {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--text-accent);
+    background-color: rgba(var(--interactive-accent-rgb, 100, 100, 255), 0.12);
+    border-radius: 4px;
+    padding: 1px 4px;
+    width: fit-content;
+    margin-top: 2px;
+}
+

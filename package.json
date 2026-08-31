@@ -5,7 +5,8 @@
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "tsc -noEmit && node esbuild.config.mjs production"
+    "build": "tsc -noEmit && node esbuild.config.mjs production",
+    "generate-fixtures": "node -e 'require(\"esbuild\").buildSync({entryPoints: [\"scripts/generate-mock-fixtures.ts\"], outfile: \".build/gen-fixtures.cjs\", bundle: true, platform: \"node\"}); require(\"./.build/gen-fixtures.cjs\");'"
   },
   "keywords": [
     "obsidian",
@@ -16,10 +17,18 @@
   "author": "Antigravity",
   "license": "MIT",
   "devDependencies": {
+    "@types/jszip": "^3.4.0",
     "@types/node": "^20.11.0",
     "builtin-modules": "^3.3.0",
     "esbuild": "^0.20.0",
     "obsidian": "latest",
     "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "docx": "^9.7.1",
+    "fast-xml-parser": "^5.11.1",
+    "jszip": "^3.10.1",
+    "mammoth": "^1.12.2",
+    "xlsx": "^0.18.5"
   }
 }

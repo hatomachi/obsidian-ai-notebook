@@ -56,12 +56,39 @@ export interface LinkedContext {
     artifacts: LinkedArtifact[];
 }
 
+export interface SourceOrigin {
+    connectorId: 'box' | 'confluence' | 'cifs' | 'web';
+    remoteUrl: string;       // ブラウザで開けるURL (出典表示・再訪用)
+    remoteId: string;        // Box file_id / Confluence pageId / CIFS絶対パス
+    remoteVersion?: string;  // etag / contentVersion / mtime (差分検知用)
+    lastSyncedAt: string;    // 最終同期日時
+}
+
+export interface SourceItemRef {
+    connectorId: 'box' | 'confluence' | 'cifs' | 'web';
+    remoteId: string;
+    remoteUrl: string;
+    title: string;
+    mimeType: string;
+    remoteVersion?: string;
+}
+
+export interface SourceConnectorAdapter {
+    id: string;
+    name: string;
+    isConfigured(settings: AINotebookSettings, secrets: Record<string, string>): boolean;
+    resolveFromUrl(url: string): Promise<SourceItemRef[]>;
+    download(item: SourceItemRef): Promise<{ buffer: ArrayBuffer; filename: string }>;
+}
+
 export interface NotebookSource {
     name: string;
     path: string; // Relative path in Obsidian vault
     extension: string;
     size: number;
     addedAt: string;
+    origin?: SourceOrigin;
+    convertedFrom?: string; // バイナリから変換された場合の元ファイル名
 }
 
 export interface NotebookArtifact {
@@ -91,6 +118,7 @@ export interface AINotebookSettings {
     claudePath: string;
     defaultModel: string;
     maxTurns: number;
+    sharedFolderBasePath?: string; // CIFS / ローカル共有フォルダの起点パス
 }
 
 export const DEFAULT_SETTINGS: AINotebookSettings = {
@@ -99,5 +127,7 @@ export const DEFAULT_SETTINGS: AINotebookSettings = {
     antigravityPath: 'agy',
     claudePath: 'claude',
     defaultModel: '',
-    maxTurns: 15
+    maxTurns: 15,
+    sharedFolderBasePath: ''
 };
+

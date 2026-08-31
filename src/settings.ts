@@ -72,5 +72,19 @@ export class AINotebookSettingTab extends PluginSettingTab {
                     this.plugin.settings.maxTurns = isNaN(parsed) || parsed <= 0 ? 15 : parsed;
                     await this.plugin.saveSettings();
                 }));
+
+        containerEl.createEl('h3', { text: '外部ソース & ファイルサーバー設定' });
+
+        new Setting(containerEl)
+            .setName('CIFS / 共有フォルダ起点パス')
+            .setDesc('ファイルサーバーやマウントされた共有フォルダの基準絶対パス（例: /Volumes/share/projects）')
+            .addText(text => text
+                .setPlaceholder('/Volumes/share')
+                .setValue(this.plugin.settings.sharedFolderBasePath || '')
+                .onChange(async (value) => {
+                    this.plugin.settings.sharedFolderBasePath = value.trim();
+                    await this.plugin.saveSettings();
+                }));
     }
 }
+

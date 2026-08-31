@@ -1,5 +1,6 @@
 import { App, TFile, TFolder, parseYaml, stringifyYaml, normalizePath } from 'obsidian';
 import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AINotebookSettings, SystemKnowledge, DocumentTemplate } from '../types';
+import { TranscriptionService } from './transcription/TranscriptionService';
 
 export class NotebookManager {
     app: App;
@@ -199,6 +200,89 @@ export class NotebookManager {
 - **ロールバック手順**: ALB ターゲットグループを即座に旧ブルー環境へ100%戻す（所要想定時間: 約30秒）。
 `;
             await this.addArtifactFile(releaseTplId, '02_fewshot_良質サンプル', fewShotDoc);
+        }
+
+        // 3. 📘 案件見積基準・過去実績ナレッジ ノートブック (Phase 4 外部ソース・ナレッジ育成サンプル)
+        const estimatesKbId = 'sample_kb_estimates';
+        const estimatesIndexPath = normalizePath(`${this.settings.rootDir}/index/${estimatesKbId}.md`);
+        if (!this.app.vault.getAbstractFileByPath(estimatesIndexPath)) {
+            const now = new Date().toISOString();
+            const estimatesFrontmatter = stringifyYaml({
+                notebook_id: estimatesKbId,
+                title: '📘 案件見積基準・過去実績ナレッジ',
+                created_at: now,
+                updated_at: now,
+                tags: ['estimate', 'pricing', 'knowledge', 'sample'],
+                icon: 'calculator',
+                description: '過去の案件見積書・提案書（Excel/PPTX）から抽出・構造化した工数基準・単価マスター・リスク係数ナレッジ',
+                linked_notebook_ids: []
+            });
+            await this.app.vault.create(estimatesIndexPath, `---\n${estimatesFrontmatter}---\n# 📘 案件見積基準・過去実績ナレッジ\n\n過去案件のExcel見積書および方式設計PPTXから抽出・洗練されたドメインナレッジ。\n`);
+
+            const estimatesDir = normalizePath(`${this.settings.rootDir}/notebooks/${estimatesKbId}`);
+            await this.ensureFolder(estimatesDir);
+            await this.ensureFolder(normalizePath(`${estimatesDir}/sources`));
+            await this.ensureFolder(normalizePath(`${estimatesDir}/artifacts`));
+            await this.ensureFolder(normalizePath(`${estimatesDir}/sessions`));
+
+            // 成果物1: 工数算出テーブル & 標準単価マスター
+            const pricingDoc = `# 工数算出テーブル & 標準単価マスター
+
+## 1. ロール別 標準単価表
+| ロール名 | 標準単価(万円/人月) | 役割定義・適用基準 |
+| :--- | :--- | :--- |
+| **PM (Project Manager)** | 180 | 全体統括、ステコミ報告、クリティカルリスクマネジメント |
+| **PL / Lead Architect** | 150 | 基本設計リード、技術意思決定、チームリード |
+| **Senior SE** | 120 | コアAPI実装、インフラ構築 (AWS/EKS)、性能チューニング |
+| **SE** | 90 | 機能実装、単体/結合テスト作成、仕様調査 |
+| **PG / Tester** | 70 | 定型実装、テスト実行、テストデータ作成 |
+
+## 2. アーキテクチャ要素別 標準工数レンジ (人月)
+| 要素・タスク名 | 標準工数目安 | 留意点・前提 |
+| :--- | :--- | :--- |
+| **バックエンド REST API 開発** | 0.5〜0.8 人月 / 1エンドポイント | Go / Clean Architecture 設計前提 |
+| **フロントエンド画面開発 (React)** | 0.4〜0.6 人月 / 1画面 | 共通UIコンポーネントがある場合 |
+| **AWS / EKS インフラ構築 (IaC)** | 3.0〜4.5 人月 | Terraform による自動化、CI/CD含む |
+| **DB マイグレーション (異種DB間)** | 3.0〜5.0 人月 | データ量・スキーマ変換難易度による |
+| **総合テスト & 負荷試験 (5k rps)** | 4.0〜5.0 人月 | シナリオ作成・Locust負荷試験実施 |
+| **夜間切替 & 移行リハーサル** | 2.0 人月 | リハーサル最低2回実施 |
+`;
+            await this.addArtifactFile(estimatesKbId, '01_工数算出テーブル_標準単価マスター', pricingDoc);
+
+            // 成果物2: 見積作成ガイドライン & リスク管理
+            const guidelineDoc = `# 見積作成ガイドライン & リスクバッファ方針
+
+## 1. 見積作成時の必須確認事項
+1. **夜間・休日作業割増**:
+   - 本番デプロイや切り替えリハーサルが夜間（22:00〜05:00）または休日の場合、**深夜割増（25%）**を工数または費用に加算すること。
+2. **外部SaaS / API 連携の前提**:
+   - 外部連携先APIの利用料や契約費用は顧客直接契約前提とし、開発見積スコープ外であることを明記する。
+3. **データ移行時のデュアルライト整合性**:
+   - 現行DBと新DB間のレプリケーション遅延が発生する懸念がある場合、整合性リトライ・補正バッチの工数（最低1.5人月）を見積もりに計上すること。
+
+## 2. リスクバッファ (予備費) 算定基準
+- **小規模・既存改善案件**: 全体工数の **5%**
+- **新規システム構築・DB移行案件**: 全体工数の **10%〜15%**
+- **外部依存・未検証PoC案件**: 全体工数の **15%〜20%**
+`;
+            await this.addArtifactFile(estimatesKbId, '02_見積作成ガイドライン_リスク管理', guidelineDoc);
+
+            // 初期セッション
+            await this.createChatSession(estimatesKbId, '見積Excelからの知識抽出セッション', [
+                {
+                    id: 'msg_sample_1',
+                    sender: 'user',
+                    text: '投入した過去3件の見積Excelと提案書PPTXから、工数算定基準と単価マスター、リスク管理ルールを抽出して artifacts にまとめて。',
+                    timestamp: now
+                },
+                {
+                    id: 'msg_sample_2',
+                    sender: 'agent',
+                    text: '投入された過去見積書（A社基幹刷新、B社APIGW移行、C社クラウド移行）および提案書PPTXを横断分析し、以下のドメインナレッジ成果物を artifacts に直接生成しました：\n\n- `01_工数算出テーブル_標準単価マスター.md`: ロール別標準単価および機能要素別工数レンジ\n- `02_見積作成ガイドライン_リスク管理.md`: 夜間割増・DB移行時の注意点・リスクバッファ算定基準\n\n今後新規の見積作成タスクを行う際は、本ノートブックを参照リンクとして追加することで、これらの基準に基づいた高精度な見積ドラフトを自律作成できます。',
+                    timestamp: now,
+                    artifactsGenerated: ['01_工数算出テーブル_標準単価マスター.md', '02_見積作成ガイドライン_リスク管理.md']
+                }
+            ]);
         }
     }
 
@@ -457,12 +541,20 @@ export class NotebookManager {
         const sources: NotebookSource[] = [];
         for (const file of folder.children) {
             if (file instanceof TFile) {
+                let convertedFrom: string | undefined = undefined;
+                // *.xlsx.md, *.pptx.md, *.docx.md の検出
+                const match = file.name.match(/^(.+\.(xlsx|xls|pptx|docx))\.md$/i);
+                if (match) {
+                    convertedFrom = match[1];
+                }
+
                 sources.push({
                     name: file.name,
                     path: file.path,
                     extension: file.extension,
                     size: file.stat.size,
-                    addedAt: new Date(file.stat.ctime).toISOString()
+                    addedAt: new Date(file.stat.ctime).toISOString(),
+                    convertedFrom
                 });
             }
         }
@@ -470,11 +562,62 @@ export class NotebookManager {
     }
 
     /**
-     * ソースファイルの追加 (Binary / ArrayBuffer 対応)
+     * ソースファイルの追加 (Binary / ArrayBuffer 対応 & 自動決定的変換)
      */
-    async addSourceFile(id: string, fileName: string, data: ArrayBuffer | string): Promise<TFile> {
+    async addSourceFile(
+        id: string,
+        fileName: string,
+        data: ArrayBuffer | string,
+        origin?: import('../types').SourceOrigin
+    ): Promise<TFile> {
         const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources`);
         await this.ensureFolder(sourcesDir);
+
+        // バイナリドキュメント（Excel/PPTX/Word）の場合は自動で Markdown に決定的変換
+        if (TranscriptionService.isTranscribable(fileName)) {
+            try {
+                const { markdown, convertedFilename } = await TranscriptionService.transcribe(
+                    typeof data === 'string' ? Buffer.from(data, 'utf-8') : Buffer.from(data),
+                    fileName
+                );
+
+                // 変換後 Markdown を sources 直下に作成
+                const mdPath = normalizePath(`${sourcesDir}/${convertedFilename}`);
+                const existingMd = this.app.vault.getAbstractFileByPath(mdPath);
+                let resultFile: TFile;
+
+                if (existingMd instanceof TFile) {
+                    await this.app.vault.modify(existingMd, markdown);
+                    resultFile = existingMd;
+                } else {
+                    resultFile = await this.app.vault.create(mdPath, markdown);
+                }
+
+                // 原本バイナリを sources/.cache/ 配下に保存（差分検知や再同期用）
+                const cacheDir = normalizePath(`${sourcesDir}/.cache`);
+                await this.ensureFolder(cacheDir);
+                const rawPath = normalizePath(`${cacheDir}/${fileName}`);
+                const existingRaw = this.app.vault.getAbstractFileByPath(rawPath);
+
+                if (existingRaw instanceof TFile) {
+                    if (typeof data === 'string') {
+                        await this.app.vault.modify(existingRaw, data);
+                    } else {
+                        await this.app.vault.modifyBinary(existingRaw, data);
+                    }
+                } else {
+                    if (typeof data === 'string') {
+                        await this.app.vault.create(rawPath, data);
+                    } else {
+                        await this.app.vault.createBinary(rawPath, data);
+                    }
+                }
+
+                return resultFile;
+            } catch (transcribeError) {
+                console.warn(`Failed to auto-transcribe ${fileName}, falling back to raw save:`, transcribeError);
+            }
+        }
 
         const filePath = normalizePath(`${sourcesDir}/${fileName}`);
         const existing = this.app.vault.getAbstractFileByPath(filePath);

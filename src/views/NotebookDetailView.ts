@@ -276,6 +276,44 @@ export class AINotebookDetailView extends ItemView {
             }
         };
 
+        // 共有フォルダ (CIFS) からのクイックインポートボタン（設定されている場合）
+        if (this.plugin.settings.sharedFolderBasePath) {
+            const cifsBtn = sourceSection.createEl('button', {
+                cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-xs',
+                text: '🗄️ 共有フォルダから追加'
+            });
+            cifsBtn.style.width = '100%';
+            cifsBtn.style.marginTop = '6px';
+            cifsBtn.onclick = async () => {
+                const basePath = this.plugin.settings.sharedFolderBasePath;
+                const inputRel = prompt(`共有フォルダ [${basePath}] 内のファイル名または相対パスを入力してください:`);
+                if (!inputRel || !inputRel.trim() || !this.notebookId) return;
+
+                const fs = require('fs');
+                const path = require('path');
+                const targetPath = path.resolve(basePath, inputRel.trim());
+
+                if (fs.existsSync(targetPath)) {
+                    try {
+                        const buffer = fs.readFileSync(targetPath);
+                        const fileName = path.basename(targetPath);
+                        await this.plugin.notebookManager.addSourceFile(this.notebookId, fileName, buffer, {
+                            connectorId: 'cifs',
+                            remoteUrl: `file://${targetPath}`,
+                            remoteId: targetPath,
+                            lastSyncedAt: new Date().toISOString()
+                        });
+                        new Notice(`共有フォルダから「${fileName}」を取り込みました`);
+                        await this.refresh();
+                    } catch (e: any) {
+                        new Notice(`ファイルの読み込みに失敗しました: ${e.message}`);
+                    }
+                } else {
+                    new Notice(`ファイルが見つかりません: ${targetPath}`);
+                }
+            };
+        }
+
         // ソース一覧リスト
         const sourceList = sourceSection.createDiv({ cls: 'ai-notebook-source-list' });
         if (this.sources.length === 0) {
@@ -284,11 +322,29 @@ export class AINotebookDetailView extends ItemView {
             for (const src of this.sources) {
                 const item = sourceList.createDiv({ cls: 'ai-notebook-source-item' });
                 
+                const effectiveExt = src.convertedFrom
+                    ? src.convertedFrom.split('.').pop() || src.extension
+                    : src.extension;
                 const iconSpan = item.createSpan({ cls: 'ai-notebook-source-icon' });
-                setIcon(iconSpan, this.getFileIcon(src.extension));
+                setIcon(iconSpan, this.getFileIcon(effectiveExt));
 
-                const nameSpan = item.createSpan({ text: src.name, cls: 'ai-notebook-source-name' });
+                const nameWrap = item.createDiv({ cls: 'ai-notebook-source-name-wrap' });
+                const nameSpan = nameWrap.createSpan({ text: src.name, cls: 'ai-notebook-source-name' });
                 nameSpan.setAttribute('title', src.name);
+
+                if (src.convertedFrom) {
+                    const badge = nameWrap.createSpan({ cls: 'ai-notebook-badge-converted' });
+                    const origExt = (src.convertedFrom.split('.').pop() || '').toLowerCase();
+                    if (origExt === 'xlsx' || origExt === 'xls') {
+                        badge.setText('📊 Excel変換');
+                    } else if (origExt === 'pptx' || origExt === 'ppt') {
+                        badge.setText('📑 PPTX変換');
+                    } else if (origExt === 'docx' || origExt === 'doc') {
+                        badge.setText('📄 Word変換');
+                    } else {
+                        badge.setText('変換済');
+                    }
+                }
 
                 const deleteBtn = item.createEl('button', { cls: 'ai-notebook-item-delete-btn' });
                 setIcon(deleteBtn, 'x');
@@ -864,7 +920,8 @@ export class AINotebookDetailView extends ItemView {
 
     private getFileIcon(ext: string): string {
         switch (ext.toLowerCase()) {
-            case 'pdf': return 'file-text';
+            case 'xlsx': case 'xls': case 'csv': return 'table';
+            case 'docx': case 'doc': case 'pdf': return 'file-text';
             case 'png': case 'jpg': case 'jpeg': case 'svg': case 'webp': return 'image';
             case 'pptx': case 'ppt': return 'presentation';
             case 'md': case 'txt': return 'file-code';
