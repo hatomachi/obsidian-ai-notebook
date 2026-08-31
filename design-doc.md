@@ -26,14 +26,20 @@
         ├── 20260831_sys_apigw/         # システム知識・クセ育成ノート
         │   ├── sources/                # 投入された元資料・設定メモ等
         │   ├── artifacts/              # 成果物: アーキ概要.md, 運用注意点.md
-        │   └── chat.json
+        │   ├── sessions/               # チャットセッション群
+        │   │   └── session_01.json
+        │   └── chat.json               # （旧形式互換）
         ├── 20260831_tpl_release/       # ドキュメント仕様・ルール育成ノート
         │   ├── sources/
         │   ├── artifacts/              # 成果物: 作成ルール.md, few-shotサンプル.md
+        │   ├── sessions/
         │   └── chat.json
         └── 20260831_task_rel09/        # 実践タスクノート
             ├── sources/                # 今回固有のファイル (PR差分、会議メモ)
             ├── artifacts/              # 今回生成された成果物 (2026-09リリース計画書.md)
+            ├── sessions/
+            │   ├── session_draft.json  # ドラフト作成セッション
+            │   └── session_review.json # レビュー・修正セッション
             └── chat.json
 ```
 
@@ -52,6 +58,7 @@
   linked_notebook_ids:
     - "20260831_sys_apigw"
     - "20260831_tpl_release"
+  active_session_id: "session_20260831_draft"
   ---
   # 2026-09 APIGW リリース計画書作成
 
@@ -77,7 +84,7 @@
 +-----------------------------------------------------------------------------------+
 |  < ギャラリーへ戻る   |  2026-09 APIGW リリース計画書作成            [Antigravity CLI] |
 +-------------------+-----------------------------------+---------------------------+
-| [コンテキストパネル]| [チャットパネル]                  | [成果物パネル]            |
+| [コンテキストパネル]| [💬 AI チャット] [💬ドラフト ▼][+新規]| [成果物パネル]            |
 |                   |                                   |                           |
 | 🔗 参照ノートブック    | User: 今回のPR差分から計画書を    | - 新規メモ作成ボタン      |
 |  ├ 📘 APIGW 仕様  |       作って。                    | 📄 2026-09_APIGW_計画書.md|
@@ -95,8 +102,9 @@
    - **参照ノートブックセクション (Linked Notebooks)**: 既存の他ノートブックを複数選択してリンク。リンク解除や対象ノートブックへの即時ジャンプが可能。
    - **直接ファイルセクション (Direct Files)**: D&Dおよびファイル選択による固有ファイルの投入。
 2. **中央カラム (Chat Panel)**:
-   - スレッド表示形式のメッセージUI。
-   - 直接投入されたファイル群に加え、**リンクされた全ノートブックの成果物（`artifacts/`）** をコンテキストとして自動展開・マウント。
+   - **マルチチャットセッション対応**: 過去セッションの選択・切り替え、新規セッションの作成（+）、リネーム・削除。
+   - スレッド表示形式のメッセージUI（MarkdownRenderer + コピー機能）。
+   - 直接投入されたファイル群に加え、**リンクされた全ノートブックの成果物（`artifacts/`）** および直近の会話履歴をプロンプトに統合展開。
 3. **右カラム (Artifact Panel)**:
    - `artifacts/` フォルダ内の成果物をカード表示。
    - カードクリックでポップアップモーダルを開き、Markdownプレビュー & 編集が可能。
@@ -111,15 +119,17 @@ Antigravity CLI / Claude Code CLI 等の各種CLIツールと連携。
 export interface LinkedContext {
     notebookId: string;
     notebookTitle: string;
-    artifacts: { name: string; content: string }[];
+    description: string;
+    artifacts: { name: string; title: string; path: string; content: string }[];
 }
 
 export interface AgentOptions {
     contextDir: string;        // 当該ノートブック sources/ フォルダの絶対パス
     outputDir: string;         // 当該ノートブック artifacts/ フォルダの絶対パス
     commandPath: string;       // agy / claude の実行パス
-    directFiles: { name: string; content: string }[];
-    linkedContexts: LinkedContext[];
+    directFiles?: { name: string; content: string }[];
+    linkedContexts?: LinkedContext[];
+    chatHistory?: ChatMessage[]; // 直近の対話履歴（マルチターン文脈）
 }
 
 export interface AgentResult {

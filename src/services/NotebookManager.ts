@@ -1,5 +1,5 @@
 import { App, TFile, TFolder, parseYaml, stringifyYaml, normalizePath } from 'obsidian';
-import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, AINotebookSettings, SystemKnowledge, DocumentTemplate } from '../types';
+import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AINotebookSettings, SystemKnowledge, DocumentTemplate } from '../types';
 
 export class NotebookManager {
     app: App;
@@ -239,7 +239,18 @@ export class NotebookManager {
             templateId: templateId || undefined
         };
 
-        // 1. Index Markdown の作成
+        // 2. 実体フォルダ構造の作成
+        const notebookDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}`);
+        await this.ensureFolder(notebookDir);
+        await this.ensureFolder(normalizePath(`${notebookDir}/sources`));
+        await this.ensureFolder(normalizePath(`${notebookDir}/artifacts`));
+        await this.ensureFolder(normalizePath(`${notebookDir}/sessions`));
+
+        // 3. 初期チャットセッションの作成
+        const initialSession = await this.createChatSession(id, '新規セッション 1');
+        metadata.activeSessionId = initialSession.id;
+
+        // 1. Index Markdown の作成 (activeSessionId を含める)
         const indexPath = normalizePath(`${this.settings.rootDir}/index/${id}.md`);
         const frontmatterObj: Record<string, any> = {
             notebook_id: metadata.id,
@@ -249,7 +260,8 @@ export class NotebookManager {
             tags: metadata.tags,
             icon: metadata.icon,
             description: metadata.description,
-            linked_notebook_ids: metadata.linkedNotebookIds || []
+            linked_notebook_ids: metadata.linkedNotebookIds || [],
+            active_session_id: metadata.activeSessionId
         };
         if (metadata.systemId) frontmatterObj.system_id = metadata.systemId;
         if (metadata.templateId) frontmatterObj.template_id = metadata.templateId;
@@ -257,16 +269,6 @@ export class NotebookManager {
         const frontmatter = stringifyYaml(frontmatterObj);
         const indexContent = `---\n${frontmatter}---\n# ${metadata.title}\n\n${metadata.description}\n`;
         await this.app.vault.create(indexPath, indexContent);
-
-        // 2. 実体フォルダ構造の作成
-        const notebookDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}`);
-        await this.ensureFolder(notebookDir);
-        await this.ensureFolder(normalizePath(`${notebookDir}/sources`));
-        await this.ensureFolder(normalizePath(`${notebookDir}/artifacts`));
-
-        // 3. chat.json の初期化
-        const chatPath = normalizePath(`${notebookDir}/chat.json`);
-        await this.app.vault.create(chatPath, JSON.stringify([], null, 2));
 
         return metadata;
     }
@@ -320,6 +322,7 @@ export class NotebookManager {
             icon: yaml.icon || 'book-open',
             description: yaml.description || '',
             linkedNotebookIds: yaml.linked_notebook_ids || yaml.linkedNotebookIds || [],
+            activeSessionId: yaml.active_session_id || yaml.activeSessionId || undefined,
             systemId: yaml.system_id || undefined,
             templateId: yaml.template_id || undefined
         };
@@ -364,6 +367,7 @@ export class NotebookManager {
             description: updated.description,
             linked_notebook_ids: updated.linkedNotebookIds || []
         };
+        if (updated.activeSessionId) frontmatterObj.active_session_id = updated.activeSessionId;
         if (updated.systemId) frontmatterObj.system_id = updated.systemId;
         if (updated.templateId) frontmatterObj.template_id = updated.templateId;
 
@@ -558,8 +562,160 @@ export class NotebookManager {
         }
     }
 
+    // ==========================================
+    // チャットセッション管理 (Multi-Chat Sessions)
+    // ==========================================
+
     /**
-     * チャット履歴の取得
+     * チャットセッション一覧の取得（旧chat.jsonからの自動移行含む）
+     */
+    async getChatSessions(notebookId: string): Promise<ChatSessionMetadata[]> {
+        const notebookDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}`);
+        const sessionsDir = normalizePath(`${notebookDir}/sessions`);
+        await this.ensureFolder(sessionsDir);
+
+        const folder = this.app.vault.getAbstractFileByPath(sessionsDir);
+        const sessions: ChatSessionMetadata[] = [];
+
+        if (folder instanceof TFolder) {
+            for (const file of folder.children) {
+                if (file instanceof TFile && file.extension === 'json') {
+                    try {
+                        const content = await this.app.vault.read(file);
+                        const sessionData = JSON.parse(content);
+                        if (sessionData && sessionData.id) {
+                            sessions.push({
+                                id: sessionData.id,
+                                title: sessionData.title || 'チャットセッション',
+                                createdAt: sessionData.createdAt || new Date(file.stat.ctime).toISOString(),
+                                updatedAt: sessionData.updatedAt || new Date(file.stat.mtime).toISOString(),
+                                messageCount: Array.isArray(sessionData.messages) ? sessionData.messages.length : 0
+                            });
+                        }
+                    } catch (e) {
+                        console.error(`Failed to parse session file: ${file.path}`, e);
+                    }
+                }
+            }
+        }
+
+        // セッションが0件の場合：旧 chat.json の自動マイグレーションまたは新規セッション作成
+        if (sessions.length === 0) {
+            const oldChatPath = normalizePath(`${notebookDir}/chat.json`);
+            const oldChatFile = this.app.vault.getAbstractFileByPath(oldChatPath);
+            let initialMessages: ChatMessage[] = [];
+            if (oldChatFile instanceof TFile) {
+                try {
+                    const oldContent = await this.app.vault.read(oldChatFile);
+                    const parsed = JSON.parse(oldContent);
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        initialMessages = parsed;
+                    }
+                } catch (e) {
+                    console.warn(`Failed to read old chat.json for notebook ${notebookId}:`, e);
+                }
+            }
+
+            const initialTitle = initialMessages.length > 0
+                ? (initialMessages[0].text.slice(0, 25).trim() || 'メインセッション')
+                : '新規セッション 1';
+            
+            const newSession = await this.createChatSession(notebookId, initialTitle, initialMessages);
+            sessions.push({
+                id: newSession.id,
+                title: newSession.title,
+                createdAt: newSession.createdAt,
+                updatedAt: newSession.updatedAt,
+                messageCount: newSession.messages.length
+            });
+        }
+
+        return sessions.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    }
+
+    /**
+     * 特定セッションの会話データを取得
+     */
+    async getChatSession(notebookId: string, sessionId: string): Promise<ChatSession | null> {
+        const filePath = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sessions/${sessionId}.json`);
+        const file = this.app.vault.getAbstractFileByPath(filePath);
+        if (file instanceof TFile) {
+            try {
+                const content = await this.app.vault.read(file);
+                return JSON.parse(content);
+            } catch (e) {
+                console.error(`Failed to read chat session ${sessionId} for notebook ${notebookId}:`, e);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * チャットセッションの保存
+     */
+    async saveChatSession(notebookId: string, session: ChatSession): Promise<void> {
+        const sessionsDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sessions`);
+        await this.ensureFolder(sessionsDir);
+
+        session.updatedAt = new Date().toISOString();
+        const filePath = normalizePath(`${sessionsDir}/${session.id}.json`);
+        const content = JSON.stringify(session, null, 2);
+
+        const existing = this.app.vault.getAbstractFileByPath(filePath);
+        if (existing instanceof TFile) {
+            await this.app.vault.modify(existing, content);
+        } else {
+            await this.app.vault.create(filePath, content);
+        }
+    }
+
+    /**
+     * 新規チャットセッションの作成
+     */
+    async createChatSession(notebookId: string, title?: string, initialMessages: ChatMessage[] = []): Promise<ChatSession> {
+        const sessionsDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sessions`);
+        await this.ensureFolder(sessionsDir);
+
+        const id = `session_${this.generateNotebookId()}`;
+        const now = new Date().toISOString();
+        const session: ChatSession = {
+            id,
+            title: title?.trim() || '新規チャット',
+            createdAt: now,
+            updatedAt: now,
+            messages: initialMessages
+        };
+
+        const filePath = normalizePath(`${sessionsDir}/${id}.json`);
+        await this.app.vault.create(filePath, JSON.stringify(session, null, 2));
+
+        return session;
+    }
+
+    /**
+     * チャットセッションの削除
+     */
+    async deleteChatSession(notebookId: string, sessionId: string): Promise<void> {
+        const filePath = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sessions/${sessionId}.json`);
+        const file = this.app.vault.getAbstractFileByPath(filePath);
+        if (file instanceof TFile) {
+            await this.app.vault.delete(file);
+        }
+    }
+
+    /**
+     * チャットセッションタイトルの更新
+     */
+    async updateChatSessionTitle(notebookId: string, sessionId: string, newTitle: string): Promise<void> {
+        const session = await this.getChatSession(notebookId, sessionId);
+        if (session) {
+            session.title = newTitle.trim() || '無題のセッション';
+            await this.saveChatSession(notebookId, session);
+        }
+    }
+
+    /**
+     * チャット履歴の取得（後方互換用）
      */
     async getChatHistory(id: string): Promise<ChatMessage[]> {
         const chatPath = normalizePath(`${this.settings.rootDir}/notebooks/${id}/chat.json`);
@@ -576,7 +732,7 @@ export class NotebookManager {
     }
 
     /**
-     * チャット履歴の保存
+     * チャット履歴の保存（後方互換用）
      */
     async saveChatHistory(id: string, history: ChatMessage[]): Promise<void> {
         const notebookDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}`);

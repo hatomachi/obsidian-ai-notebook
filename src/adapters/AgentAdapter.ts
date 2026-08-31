@@ -6,13 +6,14 @@ import * as os from 'os';
 
 export const execAsync = promisify(exec);
 
-import { LinkedContext } from '../types';
+import { LinkedContext, ChatMessage } from '../types';
 
 export interface AgentOptions {
     contextDir: string;  // 当該ノートブック sources/ の絶対パス
     outputDir: string;   // 当該ノートブック artifacts/ の絶対パス
     commandPath: string; // 実行パス (agy, claude, etc.)
     linkedContexts?: LinkedContext[]; // リンクされた別ノートブックの成果物・ナレッジ群
+    chatHistory?: ChatMessage[];      // 直近の会話履歴（マルチターン文脈）
     systemKnowledgeName?: string;     // 後方互換用
     systemKnowledgeContent?: string;  // 後方互換用
     templateTitle?: string;           // 後方互換用

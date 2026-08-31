@@ -25,8 +25,21 @@ export interface NotebookMetadata {
     icon: string;
     description: string;
     linkedNotebookIds?: string[];
+    activeSessionId?: string;
     systemId?: string; // 後方互換用
     templateId?: string; // 後方互換用
+}
+
+export interface ChatSessionMetadata {
+    id: string;
+    title: string;
+    createdAt: string;
+    updatedAt: string;
+    messageCount?: number;
+}
+
+export interface ChatSession extends ChatSessionMetadata {
+    messages: ChatMessage[];
 }
 
 export interface LinkedArtifact {

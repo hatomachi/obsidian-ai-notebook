@@ -81,8 +81,22 @@ export class ClaudeCodeAdapter implements AIAgentAdapter {
             }
         }
 
-        systemContext += `【ユーザーの質問・指示】\n${userPrompt}\n\n`;
-        systemContext += `丁寧かつ明録に回答してください。成果物（リリース計画書・レポート・要約・設計メモ等）を作成または修正する場合は、以下のように \`\`\`markdown:成果物タイトル.md の形式でファイル内容をコードブロックとして出力してください。\n`;
+        // 5. 会話履歴 (Chat History) の展開
+        if (options.chatHistory && options.chatHistory.length > 0) {
+            const validHistory = options.chatHistory.filter(m => m.text && !m.text.startsWith('思考中...'));
+            if (validHistory.length > 0) {
+                systemContext += `【これまでの対話履歴（セッションの文脈）】\n`;
+                const recentHistory = validHistory.slice(-15);
+                for (const msg of recentHistory) {
+                    const senderLabel = msg.sender === 'user' ? 'ユーザー' : 'AI';
+                    systemContext += `${senderLabel}: ${msg.text}\n\n`;
+                }
+                systemContext += `--- 対話履歴ここまで ---\n\n`;
+            }
+        }
+
+        systemContext += `【今回のユーザー質問・指示】\n${userPrompt}\n\n`;
+        systemContext += `丁寧かつ明瞭に回答してください。成果物（リリース計画書・レポート・要約・設計メモ等）を作成または修正する場合は、以下のように \`\`\`markdown:成果物タイトル.md の形式でファイル内容をコードブロックとして出力してください。\n`;
         systemContext += `※参照コンテキスト（Linked Notebooks）に仕様やルール・サンプルが含まれている場合は、それらの章立て・注意事項・フォーマットに厳格に準拠した完成度の高いMarkdownを出力してください。`;
 
         const escapedPrompt = escapePrompt(systemContext);

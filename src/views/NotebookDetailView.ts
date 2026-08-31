@@ -1,6 +1,6 @@
 import { ItemView, WorkspaceLeaf, setIcon, TFile, Notice, FileSystemAdapter, MarkdownRenderer } from 'obsidian';
 import type AINotebookPlugin from '../main';
-import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage } from '../types';
+import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession } from '../types';
 import { ArtifactModal } from './modals/ArtifactModal';
 import { LinkNotebookModal } from './modals/LinkNotebookModal';
 import { AgentFactory } from '../adapters/AgentFactory';
@@ -16,6 +16,11 @@ export class AINotebookDetailView extends ItemView {
     sources: NotebookSource[] = [];
     artifacts: NotebookArtifact[] = [];
     linkedNotebooks: NotebookMetadata[] = [];
+    
+    // マルチセッション管理
+    sessions: ChatSessionMetadata[] = [];
+    currentSessionId: string | null = null;
+    currentSession: ChatSession | null = null;
     chatHistory: ChatMessage[] = [];
 
     onBackToGalleryHandler?: () => void;
@@ -47,6 +52,8 @@ export class AINotebookDetailView extends ItemView {
 
     async setNotebookId(id: string): Promise<void> {
         this.notebookId = id;
+        this.currentSessionId = null;
+        this.currentSession = null;
         this.onSendMessageHandler = async (prompt: string) => {
             await this.handleSendMessage(prompt);
         };
@@ -71,8 +78,30 @@ export class AINotebookDetailView extends ItemView {
             }
         }
 
-        if (reloadFromDisk) {
-            this.chatHistory = await this.plugin.notebookManager.getChatHistory(this.notebookId);
+        // セッション一覧のロード
+        this.sessions = await this.plugin.notebookManager.getChatSessions(this.notebookId);
+
+        // アクティブセッションの決定
+        const activeId = this.metadata?.activeSessionId;
+        if (!this.currentSessionId || !this.sessions.some(s => s.id === this.currentSessionId)) {
+            if (activeId && this.sessions.some(s => s.id === activeId)) {
+                this.currentSessionId = activeId;
+            } else if (this.sessions.length > 0) {
+                this.currentSessionId = this.sessions[0].id;
+            } else {
+                this.currentSessionId = null;
+            }
+        }
+
+        // アクティブセッションデータの読み込み
+        if (this.currentSessionId) {
+            if (reloadFromDisk || !this.currentSession || this.currentSession.id !== this.currentSessionId) {
+                this.currentSession = await this.plugin.notebookManager.getChatSession(this.notebookId, this.currentSessionId);
+            }
+            this.chatHistory = this.currentSession ? this.currentSession.messages : [];
+        } else {
+            this.currentSession = null;
+            this.chatHistory = [];
         }
 
         this.render();
@@ -286,14 +315,126 @@ export class AINotebookDetailView extends ItemView {
         await this.refresh();
     }
 
+    // ==========================================
+    // チャットセッション操作 (Session Actions)
+    // ==========================================
+
+    /**
+     * 指定したセッションに切り替え
+     */
+    async switchSession(sessionId: string): Promise<void> {
+        if (this.currentSessionId === sessionId) return;
+        this.currentSessionId = sessionId;
+        if (this.notebookId) {
+            await this.plugin.notebookManager.updateNotebookMetadata(this.notebookId, { activeSessionId: sessionId });
+        }
+        await this.refresh(true);
+    }
+
+    /**
+     * 新規セッションを作成して切り替え
+     */
+    async createNewSession(title?: string): Promise<void> {
+        if (!this.notebookId) return;
+        const newSession = await this.plugin.notebookManager.createChatSession(this.notebookId, title);
+        this.currentSessionId = newSession.id;
+        await this.plugin.notebookManager.updateNotebookMetadata(this.notebookId, { activeSessionId: newSession.id });
+        await this.refresh(true);
+        new Notice('新しいチャットセッションを開始しました');
+    }
+
+    /**
+     * 現在のセッションのタイトルを変更
+     */
+    async renameCurrentSession(): Promise<void> {
+        if (!this.notebookId || !this.currentSessionId || !this.currentSession) return;
+        const currentTitle = this.currentSession.title;
+        const newTitle = prompt('セッションの新しいタイトルを入力してください:', currentTitle);
+        if (newTitle !== null && newTitle.trim() && newTitle.trim() !== currentTitle) {
+            await this.plugin.notebookManager.updateChatSessionTitle(this.notebookId, this.currentSessionId, newTitle.trim());
+            await this.refresh(true);
+            new Notice('セッション名を変更しました');
+        }
+    }
+
+    /**
+     * 現在のセッションを削除
+     */
+    async deleteCurrentSession(): Promise<void> {
+        if (!this.notebookId || !this.currentSessionId || !this.currentSession) return;
+        const confirmDelete = confirm(`セッション「${this.currentSession.title}」を削除しますか？\n（成果物やソースファイルは保持されます）`);
+        if (!confirmDelete) return;
+
+        await this.plugin.notebookManager.deleteChatSession(this.notebookId, this.currentSessionId);
+        this.currentSessionId = null;
+        this.currentSession = null;
+        await this.refresh(true);
+        new Notice('セッションを削除しました');
+    }
+
     /**
      * チャットパネルのレンダリング
      */
     private renderChatPanel(panel: HTMLElement): void {
         panel.empty();
 
-        const panelHeader = panel.createDiv({ cls: 'ai-notebook-panel-header' });
-        panelHeader.createEl('h3', { text: 'AI チャット' });
+        const panelHeader = panel.createDiv({ cls: 'ai-notebook-panel-header ai-notebook-chat-header' });
+        
+        const titleArea = panelHeader.createDiv({ cls: 'ai-notebook-chat-header-title-area' });
+        titleArea.createEl('h3', { text: '💬 AI チャット' });
+
+        // セッション管理コントロールバー
+        const sessionControls = panelHeader.createDiv({ cls: 'ai-notebook-session-controls' });
+
+        if (this.sessions.length > 0) {
+            // セッション選択ドロップダウン
+            const selectEl = sessionControls.createEl('select', { cls: 'ai-notebook-session-select dropdown' });
+            for (const s of this.sessions) {
+                const opt = selectEl.createEl('option', {
+                    value: s.id,
+                    text: `${s.title}${s.messageCount !== undefined ? ` (${s.messageCount})` : ''}`
+                });
+                if (s.id === this.currentSessionId) {
+                    opt.selected = true;
+                }
+            }
+            selectEl.onchange = async () => {
+                await this.switchSession(selectEl.value);
+            };
+
+            // リネームボタン
+            const renameBtn = sessionControls.createEl('button', {
+                cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-icon-only ai-notebook-btn-xs'
+            });
+            setIcon(renameBtn, 'pencil');
+            renameBtn.setAttribute('title', 'セッション名を変更');
+            renameBtn.onclick = async () => {
+                await this.renameCurrentSession();
+            };
+
+            // 削除ボタン (複数ある場合のみ表示)
+            if (this.sessions.length > 1) {
+                const deleteBtn = sessionControls.createEl('button', {
+                    cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-icon-only ai-notebook-btn-xs'
+                });
+                setIcon(deleteBtn, 'trash-2');
+                deleteBtn.setAttribute('title', '現在のセッションを削除');
+                deleteBtn.onclick = async () => {
+                    await this.deleteCurrentSession();
+                };
+            }
+        }
+
+        // 新規セッションボタン
+        const newSessionBtn = sessionControls.createEl('button', {
+            cls: 'ai-notebook-btn ai-notebook-btn-primary ai-notebook-btn-xs'
+        });
+        setIcon(newSessionBtn, 'plus');
+        newSessionBtn.createSpan({ text: ' 新規' });
+        newSessionBtn.setAttribute('title', '新しいチャットセッションを開始');
+        newSessionBtn.onclick = async () => {
+            await this.createNewSession();
+        };
 
         // クイックアクションバー
         const actionsBar = panel.createDiv({ cls: 'ai-notebook-chat-actions-bar' });
@@ -365,9 +506,10 @@ export class AINotebookDetailView extends ItemView {
         if (this.chatHistory.length === 0) {
             const emptyEl = messagesEl.createDiv({ cls: 'ai-notebook-chat-placeholder' });
             setIcon(emptyEl.createDiv({ cls: 'ai-notebook-chat-placeholder-icon' }), 'bot');
+            const sessionTitle = this.currentSession ? `「${this.currentSession.title}」` : '';
             const placeholderText = this.linkedNotebooks.length > 0
                 ? `${this.linkedNotebooks.length} 件のナレッジノートがコンテキストとしてリンクされています。上のボタンからドラフト生成するか、チャットで対話してください。`
-                : 'インプットソースや参照コンテキストをもとに、AIエージェントに何でも質問・指示してください。';
+                : `${sessionTitle} インプットソースや参照コンテキストをもとに、AIエージェントに何でも質問・指示してください。`;
             emptyEl.createDiv({ text: placeholderText, cls: 'ai-notebook-chat-placeholder-text' });
             return;
         }
@@ -478,6 +620,23 @@ export class AINotebookDetailView extends ItemView {
     private async handleSendMessage(userPrompt: string): Promise<void> {
         if (!this.notebookId) return;
 
+        // セッションが未作成または未ロードなら新規作成
+        if (!this.currentSession || !this.currentSessionId) {
+            const newSession = await this.plugin.notebookManager.createChatSession(this.notebookId);
+            this.currentSessionId = newSession.id;
+            this.currentSession = newSession;
+        }
+
+        // 初回メッセージ送信時、デフォルトタイトル（新規チャット/新規セッション等）であればプロンプトからスマートにリネーム
+        const isDefaultTitle = /^新規(チャット|セッション)/.test(this.currentSession.title);
+        if (this.currentSession.messages.length === 0 && isDefaultTitle) {
+            const cleanTitle = userPrompt.replace(/[\r\n]+/g, ' ').trim().slice(0, 22);
+            if (cleanTitle) {
+                this.currentSession.title = cleanTitle;
+                await this.plugin.notebookManager.updateChatSessionTitle(this.notebookId, this.currentSession.id, cleanTitle);
+            }
+        }
+
         // 1. ユーザーメッセージを履歴に追加
         const userMsg: ChatMessage = {
             id: Date.now().toString(),
@@ -485,7 +644,8 @@ export class AINotebookDetailView extends ItemView {
             text: userPrompt,
             timestamp: new Date().toISOString()
         };
-        this.chatHistory.push(userMsg);
+        this.currentSession.messages.push(userMsg);
+        this.chatHistory = this.currentSession.messages;
 
         // 2. ローディング表示用仮メッセージ追加
         const loadingMsgId = (Date.now() + 1).toString();
@@ -495,9 +655,10 @@ export class AINotebookDetailView extends ItemView {
             text: '思考中... (AIエージェント実行中)',
             timestamp: new Date().toISOString()
         };
-        this.chatHistory.push(loadingMsg);
+        this.currentSession.messages.push(loadingMsg);
+        this.chatHistory = this.currentSession.messages;
 
-        await this.plugin.notebookManager.saveChatHistory(this.notebookId, this.chatHistory);
+        await this.plugin.notebookManager.saveChatSession(this.notebookId, this.currentSession);
         await this.refresh(false);
 
         try {
@@ -519,20 +680,21 @@ export class AINotebookDetailView extends ItemView {
             // リンクされた参照ノートブック群の成果物を動的に集約
             const linkedContexts = await this.plugin.notebookManager.getLinkedContexts(this.notebookId);
 
-            // 3. AI エージェントの実行
+            // 3. AI エージェントの実行 (対話履歴を渡す)
             const result = await agentAdapter.executePrompt(userPrompt, {
                 contextDir: contextDirAbs,
                 outputDir: outputDirAbs,
                 commandPath: commandPath,
-                linkedContexts: linkedContexts
+                linkedContexts: linkedContexts,
+                chatHistory: this.currentSession.messages
             });
 
             // 仮ローディングメッセージの置換
-            const lastIdx = this.chatHistory.findIndex(m => m.id === loadingMsgId);
+            const lastIdx = this.currentSession.messages.findIndex(m => m.id === loadingMsgId);
             if (lastIdx !== -1) {
-                this.chatHistory[lastIdx].text = result.text || '(AIからの応答本文が空です)';
+                this.currentSession.messages[lastIdx].text = result.text || '(AIからの応答本文が空です)';
             } else {
-                this.chatHistory.push({
+                this.currentSession.messages.push({
                     id: Date.now().toString(),
                     sender: 'agent',
                     text: result.text || '(AIからの応答本文が空です)',
@@ -550,15 +712,16 @@ export class AINotebookDetailView extends ItemView {
                 new Notice(`成果物 "${title}" が生成されました`);
             }
 
-            await this.plugin.notebookManager.saveChatHistory(this.notebookId, this.chatHistory);
+            await this.plugin.notebookManager.saveChatSession(this.notebookId, this.currentSession);
         } catch (error: any) {
             console.error('[AI Notebook] Agent Execution Error:', error);
-            const lastIdx = this.chatHistory.findIndex(m => m.id === loadingMsgId);
+            const lastIdx = this.currentSession.messages.findIndex(m => m.id === loadingMsgId);
             if (lastIdx !== -1) {
-                this.chatHistory[lastIdx].text = `⚠️ AIエージェント実行エラー: ${error.message || error}`;
+                this.currentSession.messages[lastIdx].text = `⚠️ AIエージェント実行エラー: ${error.message || error}`;
             }
-            await this.plugin.notebookManager.saveChatHistory(this.notebookId, this.chatHistory);
+            await this.plugin.notebookManager.saveChatSession(this.notebookId, this.currentSession);
         } finally {
+            this.chatHistory = this.currentSession ? this.currentSession.messages : [];
             await this.refresh(false);
         }
     }

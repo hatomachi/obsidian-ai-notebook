@@ -1164,4 +1164,71 @@
     align-items: center;
 }
 
+/* ==========================================
+   Multi-Chat Sessions UI
+   ========================================== */
+.ai-notebook-chat-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+}
+
+.ai-notebook-chat-header-title-area {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.ai-notebook-chat-header-title-area h3 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.ai-notebook-session-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.ai-notebook-session-select {
+    max-width: 240px;
+    height: 28px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--text-normal);
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    cursor: pointer;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.ai-notebook-session-select:hover {
+    border-color: var(--interactive-accent);
+}
+
+.ai-notebook-btn-xs {
+    padding: 2px 8px !important;
+    font-size: 0.78rem !important;
+    height: 28px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 4px !important;
+}
+
+.ai-notebook-btn-icon-only.ai-notebook-btn-xs {
+    width: 28px !important;
+    height: 28px !important;
+    padding: 0 !important;
+}
+
+
 
