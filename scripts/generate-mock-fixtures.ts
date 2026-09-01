@@ -301,6 +301,54 @@ async function main() {
         path.join(dirCommon, '全社共通_非機能要件定義書_サンプル.docx')
     );
 
+    // 6. 異常系・意地悪フィクスチャの生成 (TASK-027検証用)
+    console.log(`=== 異常系・意地悪フィクスチャの生成 ===`);
+    const emptyPptxPath = path.join(outputDir, '06_異常系_0バイト空ファイル.pptx');
+    fs.writeFileSync(emptyPptxPath, Buffer.alloc(0));
+    console.log(`[Generated] ${emptyPptxPath}`);
+
+    const corruptedPptxPath = path.join(outputDir, '07_異常系_破損ZIP切断.pptx');
+    fs.writeFileSync(corruptedPptxPath, Buffer.from('PK\x03\x04truncated_corrupted_data_without_central_directory'));
+    console.log(`[Generated] ${corruptedPptxPath}`);
+
+    // 8. 複雑な表・図形入りPPTX
+    const complexPptxZip = new JSZip();
+    complexPptxZip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+</Types>`);
+    complexPptxZip.file('ppt/slides/slide1.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      <p:sp><p:txBody><a:p><a:r><a:t>複雑構造スライド: 表および複数図形コンテナ</a:t></a:r></a:p></p:txBody></p:sp>
+      <p:graphicFrame>
+        <a:graphic>
+          <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table">
+            <a:tbl>
+              <a:tr>
+                <a:tc><a:txBody><a:p><a:r><a:t>項目名</a:t></a:r></a:p></a:txBody></a:tc>
+                <a:tc><a:txBody><a:p><a:r><a:t>仕様・パラメータ</a:t></a:r></a:p></a:txBody></a:tc>
+              </a:tr>
+              <a:tr>
+                <a:tc><a:txBody><a:p><a:r><a:t>最大同時接続数</a:t></a:r></a:p></a:txBody></a:tc>
+                <a:tc><a:txBody><a:p><a:r><a:t>10,000 req/sec (Envoy Rate Limit)</a:t></a:r></a:p></a:txBody></a:tc>
+              </a:tr>
+            </a:tbl>
+          </a:graphicData>
+        </a:graphic>
+      </p:graphicFrame>
+    </p:spTree>
+  </p:cSld>
+</p:sld>`);
+    const complexContent = await complexPptxZip.generateAsync({ type: 'nodebuffer' });
+    const complexPptxPath = path.join(outputDir, '08_複雑構造_表と図形スライド.pptx');
+    fs.writeFileSync(complexPptxPath, complexContent);
+    console.log(`[Generated] ${complexPptxPath}`);
+
     console.log(`=== 全テストデータ & 階層ツリーの生成完了: ${outputDir} ===`);
 }
 

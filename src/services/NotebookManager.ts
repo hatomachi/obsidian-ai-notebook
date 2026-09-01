@@ -1,5 +1,5 @@
 import { App, TFile, TFolder, parseYaml, stringifyYaml, normalizePath } from 'obsidian';
-import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AINotebookSettings, SystemKnowledge, DocumentTemplate, SourceOrigin } from '../types';
+import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AINotebookSettings, SystemKnowledge, DocumentTemplate, SourceOrigin, TranscriptionErrorEntry } from '../types';
 import { TranscriptionService } from './transcription/TranscriptionService';
 import { BoundFolderReader } from './BoundFolderReader';
 import * as path from 'path';
@@ -572,6 +572,77 @@ export class NotebookManager {
     }
 
     /**
+     * 変換エラー情報（.transcription-errors.json）の取得
+     */
+    async readTranscriptionErrors(id: string): Promise<Record<string, TranscriptionErrorEntry>> {
+        const errorsPath = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources/.transcription-errors.json`);
+        const file = this.app.vault.getAbstractFileByPath(errorsPath);
+        if (file instanceof TFile) {
+            try {
+                const content = await this.app.vault.read(file);
+                return JSON.parse(content);
+            } catch (e) {
+                console.warn(`Failed to read .transcription-errors.json for notebook ${id}:`, e);
+            }
+        }
+        return {};
+    }
+
+    /**
+     * 変換エラー情報の保存
+     */
+    private async saveTranscriptionErrors(id: string, errors: Record<string, TranscriptionErrorEntry>): Promise<void> {
+        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources`);
+        await this.ensureFolder(sourcesDir);
+        const errorsPath = normalizePath(`${sourcesDir}/.transcription-errors.json`);
+        const content = JSON.stringify(errors, null, 2);
+
+        const existing = this.app.vault.getAbstractFileByPath(errorsPath);
+        if (existing instanceof TFile) {
+            await this.app.vault.modify(existing, content);
+        } else {
+            await this.app.vault.create(errorsPath, content);
+        }
+    }
+
+    /**
+     * 変換エラー情報の記録
+     */
+    async recordTranscriptionError(id: string, fileName: string, error: any, actualBytesRead: number): Promise<void> {
+        const errorsMap = await this.readTranscriptionErrors(id);
+        errorsMap[fileName] = {
+            fileName,
+            fileSize: actualBytesRead,
+            actualBytesRead,
+            errorMessage: error?.message || String(error),
+            stackTrace: error?.stack || undefined,
+            timestamp: new Date().toISOString()
+        };
+        await this.saveTranscriptionErrors(id, errorsMap);
+    }
+
+    /**
+     * 変換エラー情報の消去
+     */
+    async clearTranscriptionError(id: string, fileName: string): Promise<void> {
+        const errorsMap = await this.readTranscriptionErrors(id);
+        let modified = false;
+        if (errorsMap[fileName]) {
+            delete errorsMap[fileName];
+            modified = true;
+        }
+        // *.md 形式で登録されている可能性もあるため両方クリア
+        const mdName = `${fileName}.md`;
+        if (errorsMap[mdName]) {
+            delete errorsMap[mdName];
+            modified = true;
+        }
+        if (modified) {
+            await this.saveTranscriptionErrors(id, errorsMap);
+        }
+    }
+
+    /**
      * ソースファイル一覧の取得
      */
     async getSources(id: string): Promise<NotebookSource[]> {
@@ -580,6 +651,7 @@ export class NotebookManager {
         if (!(folder instanceof TFolder)) return [];
 
         const originsMap = await this.readSourcesOrigins(id);
+        const errorsMap = await this.readTranscriptionErrors(id);
         const sources: NotebookSource[] = [];
 
         for (const file of folder.children) {
@@ -593,6 +665,7 @@ export class NotebookManager {
 
                 // 変換前ファイル名または現在のファイル名から origin を検索
                 const origin = (convertedFrom && originsMap[convertedFrom]) || originsMap[file.name] || undefined;
+                const transcriptionError = errorsMap[file.name] || (convertedFrom ? errorsMap[convertedFrom] : undefined);
 
                 sources.push({
                     name: file.name,
@@ -601,7 +674,8 @@ export class NotebookManager {
                     size: file.stat.size,
                     addedAt: new Date(file.stat.ctime).toISOString(),
                     origin,
-                    convertedFrom
+                    convertedFrom,
+                    transcriptionError
                 });
             }
         }
@@ -645,13 +719,20 @@ export class NotebookManager {
             return Buffer.from(d);
         };
 
+        const buffer = toBuffer(data);
+        if (buffer.length === 0) {
+            throw new Error(`ファイル "${fileName}" のデータが空（0バイト）です。ファイルが正しく保存・同期されているか確認してください。`);
+        }
+
         // バイナリドキュメント（Excel/PPTX/Word）の場合は自動で Markdown に決定的変換
         if (TranscriptionService.isTranscribable(fileName)) {
             try {
                 const { markdown, convertedFilename } = await TranscriptionService.transcribe(
-                    toBuffer(data),
+                    buffer,
                     fileName
                 );
+
+                await this.clearTranscriptionError(id, fileName);
 
                 // 変換後 Markdown を sources 直下に作成
                 const mdPath = normalizePath(`${sourcesDir}/${convertedFilename}`);
@@ -686,8 +767,9 @@ export class NotebookManager {
                 }
 
                 return resultFile;
-            } catch (transcribeError) {
-                console.warn(`Failed to auto-transcribe ${fileName}, falling back to raw save:`, transcribeError);
+            } catch (transcribeError: any) {
+                console.warn(`Failed to auto-transcribe ${fileName}, recording error and falling back to raw save:`, transcribeError);
+                await this.recordTranscriptionError(id, fileName, transcribeError, buffer.length);
             }
         }
 
@@ -711,13 +793,91 @@ export class NotebookManager {
     }
 
     /**
+     * 未変換バイナリまたは変換失敗ファイルの再変換を実行
+     */
+    async retranscribeSource(id: string, fileName: string): Promise<{ success: boolean; error?: string }> {
+        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources`);
+        const rawInSources = normalizePath(`${sourcesDir}/${fileName}`);
+        const rawInCache = normalizePath(`${sourcesDir}/.cache/${fileName}`);
+
+        let rawFile = this.app.vault.getAbstractFileByPath(rawInSources);
+        if (!(rawFile instanceof TFile)) {
+            rawFile = this.app.vault.getAbstractFileByPath(rawInCache);
+        }
+
+        if (!(rawFile instanceof TFile)) {
+            return { success: false, error: `原本ファイルが見つかりません: ${fileName}` };
+        }
+
+        try {
+            const arrayBuf = await this.app.vault.readBinary(rawFile);
+            const buffer = Buffer.from(arrayBuf);
+            if (buffer.length === 0) {
+                throw new Error(`ファイルデータが空（0バイト）です。`);
+            }
+
+            const { markdown, convertedFilename } = await TranscriptionService.transcribe(buffer, fileName);
+
+            // 変換後 Markdown を sources 直下に作成
+            const mdPath = normalizePath(`${sourcesDir}/${convertedFilename}`);
+            const existingMd = this.app.vault.getAbstractFileByPath(mdPath);
+            if (existingMd instanceof TFile) {
+                await this.app.vault.modify(existingMd, markdown);
+            } else {
+                await this.app.vault.create(mdPath, markdown);
+            }
+
+            // 原本を .cache/ に移動（sources/ 直下にある場合は .cache へ移管して sources/ 直下の原本を削除）
+            const cacheDir = normalizePath(`${sourcesDir}/.cache`);
+            await this.ensureFolder(cacheDir);
+            const cachePath = normalizePath(`${cacheDir}/${fileName}`);
+
+            if (rawFile.path === rawInSources) {
+                const existingCache = this.app.vault.getAbstractFileByPath(cachePath);
+                if (existingCache instanceof TFile) {
+                    await this.app.vault.modifyBinary(existingCache, arrayBuf);
+                } else {
+                    await this.app.vault.createBinary(cachePath, arrayBuf);
+                }
+                await this.app.vault.delete(rawFile);
+            }
+
+            await this.clearTranscriptionError(id, fileName);
+            return { success: true };
+        } catch (err: any) {
+            console.error(`Retranscription failed for ${fileName}:`, err);
+            const fileSize = (rawFile instanceof TFile) ? rawFile.stat.size : 0;
+            await this.recordTranscriptionError(id, fileName, err, fileSize);
+            return { success: false, error: err?.message || String(err) };
+        }
+    }
+
+    /**
      * ソースファイルの削除
      */
     async deleteSourceFile(id: string, fileName: string): Promise<void> {
-        const filePath = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources/${fileName}`);
+        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources`);
+        const filePath = normalizePath(`${sourcesDir}/${fileName}`);
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (file instanceof TFile) {
             await this.app.vault.delete(file);
+        }
+
+        // キャッシュ（.cache/）内の原本も削除
+        const cachePath = normalizePath(`${sourcesDir}/.cache/${fileName}`);
+        const cacheFile = this.app.vault.getAbstractFileByPath(cachePath);
+        if (cacheFile instanceof TFile) {
+            await this.app.vault.delete(cacheFile);
+        }
+
+        // *.md が削除された場合、元のバイナリキャッシュも探索して削除
+        const match = fileName.match(/^(.+\.(xlsx|xls|pptx|docx))\.md$/i);
+        if (match) {
+            const origCachePath = normalizePath(`${sourcesDir}/.cache/${match[1]}`);
+            const origCacheFile = this.app.vault.getAbstractFileByPath(origCachePath);
+            if (origCacheFile instanceof TFile) {
+                await this.app.vault.delete(origCacheFile);
+            }
         }
 
         // origins からも削除
@@ -726,6 +886,9 @@ export class NotebookManager {
             delete originsMap[fileName];
             await this.saveSourcesOrigins(id, originsMap);
         }
+
+        // エラーログからも削除
+        await this.clearTranscriptionError(id, fileName);
     }
 
     /**

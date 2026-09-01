@@ -380,6 +380,39 @@ export class AINotebookDetailView extends ItemView {
                     }
                 }
 
+                // 変換エラー時の警告バッジ表示
+                if (src.transcriptionError) {
+                    const errorBadge = nameWrap.createSpan({ cls: 'ai-notebook-badge-error' });
+                    errorBadge.setText('⚠️ 変換失敗');
+                    const errDetail = src.transcriptionError.errorMessage || '不明なエラー';
+                    errorBadge.setAttribute('title', `変換エラー: ${errDetail}\n(クリックでエラー詳細を表示)`);
+                    errorBadge.onclick = (e) => {
+                        e.stopPropagation();
+                        new Notice(`【変換エラー詳細: ${src.name}】\n${errDetail}\nサイズ: ${src.transcriptionError?.fileSize} bytes`, 10000);
+                    };
+                }
+
+                // 未変換のバイナリまたはエラー発生ソースに対する再変換（リラン）ボタン
+                const isTranscribableRaw = ['xlsx', 'xls', 'docx', 'pptx'].includes(src.extension.toLowerCase()) && !src.convertedFrom;
+                if (isTranscribableRaw || src.transcriptionError) {
+                    const retryBtn = item.createEl('button', { cls: 'ai-notebook-item-retry-btn' });
+                    setIcon(retryBtn, 'refresh-cw');
+                    retryBtn.setAttribute('title', 'Markdownへ再変換を実行');
+                    retryBtn.onclick = async (e) => {
+                        e.stopPropagation();
+                        if (!this.notebookId) return;
+                        retryBtn.addClass('is-loading');
+                        new Notice(`${src.name} の再変換を実行中...`);
+                        const result = await this.plugin.notebookManager.retranscribeSource(this.notebookId, src.name);
+                        if (result.success) {
+                            new Notice(`✅ ${src.name} を Markdown に変換しました`);
+                        } else {
+                            new Notice(`❌ 再変換に失敗しました: ${result.error}`, 8000);
+                        }
+                        await this.refresh();
+                    };
+                }
+
                 const deleteBtn = item.createEl('button', { cls: 'ai-notebook-item-delete-btn' });
                 setIcon(deleteBtn, 'x');
                 deleteBtn.setAttribute('title', '削除');
@@ -394,18 +427,68 @@ export class AINotebookDetailView extends ItemView {
     }
 
     /**
-     * ファイル投入の処理ハンドラー
+     * ファイル投入の処理ハンドラー（レース状態対策・0バイトガード・Electronフォールバック）
      */
     private async handleFilesAdded(files: FileList): Promise<void> {
         if (!this.notebookId) return;
 
+        let addedCount = 0;
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
-            const buffer = await file.arrayBuffer();
-            await this.plugin.notebookManager.addSourceFile(this.notebookId, file.name, buffer);
+            let buffer: ArrayBuffer | Buffer | null = null;
+            
+            // Electron 環境での確実なローカルファイル読み込み
+            const localPath = (file as any).path;
+            if (localPath && typeof require !== 'undefined') {
+                try {
+                    const fs = require('fs');
+                    if (fs.existsSync(localPath)) {
+                        buffer = fs.readFileSync(localPath);
+                    }
+                } catch (e) {
+                    console.warn(`Failed to read file via fs: ${localPath}`, e);
+                }
+            }
+
+            if (!buffer || (buffer as any).byteLength === 0) {
+                buffer = await file.arrayBuffer();
+            }
+
+            // 0バイト判定 & レース状態リトライ (150ms待機 × 最大2回)
+            let retries = 0;
+            while ((!buffer || buffer.byteLength === 0) && retries < 2) {
+                retries++;
+                await new Promise(r => setTimeout(r, 150));
+                if (localPath && typeof require !== 'undefined') {
+                    try {
+                        const fs = require('fs');
+                        if (fs.existsSync(localPath)) {
+                            buffer = fs.readFileSync(localPath);
+                        }
+                    } catch {}
+                }
+                if (!buffer || (buffer as any).byteLength === 0) {
+                    buffer = await file.arrayBuffer();
+                }
+            }
+
+            if (!buffer || buffer.byteLength === 0) {
+                new Notice(`⚠️ "${file.name}" のデータが空（0バイト）です。ファイルの保存中または未同期の可能性があります。スキップしました。`, 6000);
+                continue;
+            }
+
+            try {
+                await this.plugin.notebookManager.addSourceFile(this.notebookId, file.name, buffer);
+                addedCount++;
+            } catch (err: any) {
+                console.error(`Failed to add source file ${file.name}:`, err);
+                new Notice(`❌ "${file.name}" の追加に失敗しました: ${err?.message || err}`, 6000);
+            }
         }
 
-        new Notice(`${files.length} 件のファイルをソースに追加しました`);
+        if (addedCount > 0) {
+            new Notice(`${addedCount} 件のファイルをソースに追加しました`);
+        }
         await this.refresh();
     }
 

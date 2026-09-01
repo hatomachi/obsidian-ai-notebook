@@ -159,9 +159,10 @@ export interface AIAgentAdapter {
 
 ```mermaid
 graph TD
-    subgraph Connector_Layer ["1. Connector 層 (取得)"]
-        BOX["📦 Box API<br>(Folder / File URL)"]
+    subgraph Connector_Layer ["1. Connector 層 (取得) — 優先度: GitLab > Confluence > Box"]
+        GITLAB["🦊 GitLab API<br>(複数サーバー/複数認証)<br>ソースコード + 議事録(Whisper文字起こし済)"]
         CONF["📘 Confluence API<br>(Space / Page URL)"]
+        BOX["📦 Box API<br>(Folder / File URL)"]
         CIFS["🗄️ CIFS / Fileserver<br>(マウントパス)"]
         WEB["🌐 Web / 社内URL"]
     end
@@ -171,6 +172,7 @@ graph TD
         P_PPT["📑 PPTX (.pptx)<br>スライド階層・箇条書き・ノート"]
         P_DOC["📄 PDF / Word<br>Clean Markdown"]
         P_CONF["📝 Confluence HTML<br>マクロ除去・Clean Markdown"]
+        P_CODE["💻 ソースコード / 議事録テキスト<br>ほぼそのまま passthrough (既に構造化済み)"]
     end
 
     subgraph Notebook_Layer ["3. Notebook 層 (定着 & 再帰利用)"]
@@ -196,8 +198,9 @@ graph TD
     CONF --> P_CONF
     CIFS --> P_XLS & P_PPT & P_DOC
     WEB --> P_CONF
+    GITLAB --> P_CODE
 
-    P_XLS & P_PPT & P_DOC & P_CONF -->|"自動格納"| S1
+    P_XLS & P_PPT & P_DOC & P_CONF & P_CODE -->|"自動格納"| S1
 ```
 
 ### 5.1 3層構造の役割分担
@@ -215,19 +218,28 @@ graph TD
 ### 5.2 コネクタ抽象化インターフェース
 ```typescript
 export interface SourceItemRef {
-    connectorId: 'box' | 'confluence' | 'cifs' | 'web';
-    remoteId: string;        // Box file_id / Confluence pageId / CIFS絶対パス
+    connectorId: 'gitlab' | 'confluence' | 'box' | 'cifs' | 'web';
+    connectorInstanceId?: string; // 複数サーバー/複数認証を持つコネクタ(GitLab等)でどの接続先かを識別
+    remoteId: string;        // GitLabはproject+file path / Box file_id / Confluence pageId / CIFS絶対パス
     remoteUrl: string;       // ブラウザで開けるURL（出典表示・ジャンプ用）
     title: string;           // 表示名
     mimeType: string;
-    remoteVersion?: string;  // etag / contentVersion / mtime (差分検知用)
+    remoteVersion?: string;  // GitLabはcommit SHA、Box/Confluenceはetag/contentVersion (差分検知用)
+}
+
+// GitLabのように社内に複数サーバー(=複数認証情報)が存在するコネクタ用の接続先定義
+export interface ConnectorInstanceConfig {
+    id: string;       // 内部識別子 (例: "gitlab_teamA")
+    label: string;    // UI表示名 (例: "Team A GitLab (self-hosted)")
+    baseUrl: string;  // 例: "https://gitlab.teamA.internal"
+    // アクセストークン本体は `.secrets.json` に id をキーとして分離保存する (5.4参照)
 }
 
 export interface SourceConnectorAdapter {
     id: string;
     name: string;
     isConfigured(settings: AINotebookSettings, secrets: Record<string, string>): boolean;
-    resolveFromUrl(url: string): Promise<SourceItemRef[]>; // URLから対象一覧を解決
+    resolveFromUrl(url: string): Promise<SourceItemRef[]>; // URLからどの接続先の対象かを解決し一覧を返す
     download(item: SourceItemRef): Promise<{ buffer: ArrayBuffer; filename: string }>;
 }
 ```
@@ -235,10 +247,11 @@ export interface SourceConnectorAdapter {
 ### 5.3 データモデル拡張 (`NotebookSource` と `SourceOrigin`)
 ```typescript
 export interface SourceOrigin {
-    connectorId: 'box' | 'confluence' | 'cifs' | 'web';
+    connectorId: 'gitlab' | 'confluence' | 'box' | 'cifs' | 'web';
+    connectorInstanceId?: string; // GitLab等、複数サーバーを持つコネクタの接続先識別
     remoteUrl: string;
     remoteId: string;
-    remoteVersion?: string;
+    remoteVersion?: string;   // GitLabはcommit SHA
     lastSyncedAt: string;
 }
 
@@ -255,6 +268,8 @@ export interface NotebookSource {
 ### 5.4 セキュリティ設計 (API Secrets の安全な分離管理)
 - Obsidian の設定ファイル（`data.json`）は Vault 内に平文保存されるため、Git 共有や外部同期時に API トークンが漏洩するリスクがある。
 - Box Developer Token / OAuth Token、Confluence API Token 等のシークレットは、`.gitignore` 対象の専用ファイル（例: `_ainotebook/.secrets.json`）に分離保存し、リポジトリにコミットされない構造とする。
+- GitLabは社内に複数サーバー（＝複数の認証情報）が存在する前提とし、`.secrets.json` に `ConnectorInstanceConfig.id` をキーとした複数トークンを保持できる構造にする。各トークンは必ず読み取り専用スコープ（`read_api` / `read_repository`。`api` / `write_repository` は付与しない）で発行し、プラットフォーム側のスコープ制御を多層防御の一枚として活用する。
+- 外部コネクタのAPI呼び出しは、CIFSの `BoundFolderReader` と同様に必ずHost（プラグイン本体）側のコードで完結させる。AIエージェント（CLIサブプロセス）にはトークンやAPI呼び出し能力そのものを渡さず、Agentが受け取るのはHostが取得した結果のテキストのみとする。
 
 ### 5.5 スナップショット同期と再同期・差分検知
 - 内部リンク（`linked_notebook_ids`）は動的参照であるが、外部ソースは取り込み時点の **スナップショット** として `sources/` に保持する。
@@ -314,6 +329,22 @@ sequenceDiagram
   - 「📁 フォルダツリーから選択」モーダルで、GUIからも階層を辿ってフォルダ/ファイルを選択・一括取り込み可能。
   - 取り込まれたソースには「📁 `2024/NDPシステム_基盤更改/`」という親フォルダ別のグループタグ/バッジが付与され、どこから来たファイルかが一目瞭然になる。
 
+### 5.8 GitLabコネクタ設計（複数サーバー対応）と議事録パイプラインとの統合
+GitLab は Box / Confluence より優先度が高い（最優先）コネクタとして扱う。理由は2つ:
+1. 社内システムのソースコード・仕様が集まっており、concept.md ユースケース1（「APIGWシステム仕様・クセ」のようなナレッジ育成Notebook）の種まきに直結する。
+2. 議事録が既に GitLab 上のテキストとして存在する。会議の音声・スクリーンショットは別パイプラインで自動的に GitLab へ push され、CI 上で Whisper（音声認識）と Claude による文字起こし・整形が実行され、リポジトリ内のテキスト/Markdownとして更新され続けている。つまり議事録専用のコネクタを別途作る必要はなく、GitLabコネクタが完成すればそのまま取り込み対象にできる。
+
+**複数サーバー・複数認証への対応**: 社内に GitLab サーバーが複数存在し、サーバーごとに認証情報が異なる。単一の `gitlabBaseUrl` / `gitlabToken` という設計は破綻するため、`AINotebookSettings` に `gitlabInstances: ConnectorInstanceConfig[]` のような配列を持たせ、`resolveFromUrl()` は貼り付けられたURLの一致するインスタンス（`baseUrl` 前方一致等）を判定してから、そのインスタンス用のトークンでAPIを呼び出す。未登録のサーバーのURLが渡された場合は「このGitLabサーバーは未登録です」という形でインスタンス追加を促す。
+
+**API**:
+- 一覧: `GET /projects/:id/repository/tree`（`recursive=true`）
+- 内容取得: `GET /projects/:id/repository/files/:file_path/raw`
+- `remoteVersion` にはコミットSHAを記録する（Phase 4hの再同期・差分検知の検証にも都合が良い）
+
+**変換方針**: ソースコードやREADME、議事録の文字起こしテキストは、Excel/PPTXのような重い決定的変換が不要な場合が多い。`TranscriptionService` を通さず、ほぼそのまま（バイナリ判定・サイズ上限程度のフィルタのみ）`sources/` に取り込む passthrough ルートを用意する。
+
+**セキュリティ**: 5.4節の原則をそのまま適用する。各インスタンスのトークンは読み取り専用スコープ（`read_api` / `read_repository`）のみで発行し、API呼び出しはHost側で完結させ、AIエージェント（CLIサブプロセス）にはトークン・API呼び出し能力を一切渡さない。
+
 ---
 
 ## 6. 段階的開発計画 (Phased Implementation Plan)
@@ -341,9 +372,10 @@ sequenceDiagram
     - OS/マウントレベルでの読み取り専用マウント等、多層防御の検討
     - 読み込みの監査ログ（`origin.lastSyncedAt` 等の活用）
     - 上記が揃うまでは `boundFolderPath` に実際の編集権限付き共有フォルダを設定しない、という運用ルールの明文化
-  - **Phase 4e: Box Connector**: Box API 連携、フォルダ/ファイル URL 解析、一覧取得・ダウンロード
+  - **Phase 4e: GitLab Connector（最優先）**: 複数GitLabサーバー/複数認証（`ConnectorInstanceConfig[]`）への対応、ソースコード・READMEのpassthrough取り込み、既存の議事録自動文字起こしパイプライン（音声・スクショ→GitLab push→CI(Whisper+Claude)→文字起こし更新）が生成する成果物もこの経路でカバー（詳細は5.8節）
   - **Phase 4f: Confluence Connector**: Confluence Cloud REST API v2 連携、ページ/スペース URL 解析、Clean Markdown 変換
-  - **Phase 4g: ソースパネル UI 拡張 & 再同期・差分検知**: 左カラム「📥 外部ソース」セクション、最終同期日時表示、差分検知・再同期アクション
+  - **Phase 4g: Box Connector（優先度低、後回し可）**: Box API 連携、フォルダ/ファイル URL 解析、一覧取得・ダウンロード
+  - **Phase 4h: ソースパネル UI 拡張 & 再同期・差分検知**: 左カラム「📥 外部ソース」セクション、最終同期日時表示、差分検知・再同期アクション（GitLabのcommit SHAはこの検証に使いやすい）
 - **Phase 5**: チーム展開・高度な目録管理 & コンテキスト検索 (Future Scope)
   - 知識 Notebook 肥大化時の関連 artifact 抽出・埋め込み検索 (Embedding Search)
 

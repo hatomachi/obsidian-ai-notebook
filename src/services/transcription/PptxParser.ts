@@ -7,6 +7,10 @@ export class PptxParser {
      */
     public static async parse(data: Buffer | ArrayBuffer, originalFilename: string): Promise<string> {
         const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        if (buffer.length === 0) {
+            throw new Error('ファイルデータが空（0バイト）です。ファイルが正しく保存・同期されているか確認してください。');
+        }
+
         const zip = await JSZip.loadAsync(buffer);
         const xmlParser = new XMLParser({
             ignoreAttributes: false,
@@ -22,10 +26,6 @@ export class PptxParser {
                 return numA - numB;
             });
 
-        // ノートスライドファイルの特定 (ppt/notesSlides/notesSlide1.xml, ...)
-        const notesFiles = Object.keys(zip.files)
-            .filter(name => /^ppt\/notesSlides\/notesSlide\d+\.xml$/i.test(name));
-
         const lines: string[] = [];
         lines.push(`# 📑 PowerPoint 解析データ: ${originalFilename}`);
         lines.push(`- **総スライド数**: ${slideFiles.length}`);
@@ -34,41 +34,53 @@ export class PptxParser {
         for (let i = 0; i < slideFiles.length; i++) {
             const slideFile = slideFiles[i];
             const slideIndex = i + 1;
-            const slideXml = await zip.files[slideFile].async('string');
-            const slideData = xmlParser.parse(slideXml);
 
-            const slideTexts = PptxParser.extractTextsFromXml(slideData);
+            try {
+                const slideXml = await zip.files[slideFile].async('string');
+                const slideData = xmlParser.parse(slideXml);
 
-            // スライドタイトル（最初の非空テキスト）と本文の分離
-            const title = slideTexts[0] || `スライド ${slideIndex}`;
-            const bodyTexts = slideTexts.slice(1);
+                const slideTexts = PptxParser.extractTextsFromXml(slideData);
 
-            lines.push(`## 🖼️ Slide ${slideIndex}: ${title}`);
-            lines.push('');
+                // スライドタイトル（最初の非空テキスト）と本文の分離
+                const title = slideTexts[0] || `スライド ${slideIndex}`;
+                const bodyTexts = slideTexts.slice(1);
 
-            if (bodyTexts.length > 0) {
-                for (const text of bodyTexts) {
-                    lines.push(`- ${text}`);
-                }
+                lines.push(`## 🖼️ Slide ${slideIndex}: ${title}`);
                 lines.push('');
-            }
 
-            // 対応するスライドノートの探索 (slideIndex または notesSlideN.xml)
-            const noteFileCandidate = `ppt/notesSlides/notesSlide${slideIndex}.xml`;
-            if (zip.files[noteFileCandidate]) {
-                const noteXml = await zip.files[noteFileCandidate].async('string');
-                const noteData = xmlParser.parse(noteXml);
-                const noteTexts = PptxParser.extractTextsFromXml(noteData);
-                // ヘッダーやスライド番号を除く
-                const actualNotes = noteTexts.filter(t => t !== String(slideIndex) && t !== title && !t.includes('Slide '));
-                if (actualNotes.length > 0) {
-                    lines.push('> [!NOTE]');
-                    lines.push('> **発表者ノート (Notes / 口頭説明・暗黙知):**');
-                    for (const note of actualNotes) {
-                        lines.push(`> ${note}`);
+                if (bodyTexts.length > 0) {
+                    for (const text of bodyTexts) {
+                        lines.push(`- ${text}`);
                     }
                     lines.push('');
                 }
+
+                // 対応するスライドノートの探索 (slideIndex または notesSlideN.xml)
+                const noteFileCandidate = `ppt/notesSlides/notesSlide${slideIndex}.xml`;
+                if (zip.files[noteFileCandidate]) {
+                    try {
+                        const noteXml = await zip.files[noteFileCandidate].async('string');
+                        const noteData = xmlParser.parse(noteXml);
+                        const noteTexts = PptxParser.extractTextsFromXml(noteData);
+                        // ヘッダーやスライド番号を除く
+                        const actualNotes = noteTexts.filter(t => t !== String(slideIndex) && t !== title && !t.includes('Slide '));
+                        if (actualNotes.length > 0) {
+                            lines.push('> [!NOTE]');
+                            lines.push('> **発表者ノート (Notes / 口頭説明・暗黙知):**');
+                            for (const note of actualNotes) {
+                                lines.push(`> ${note}`);
+                            }
+                            lines.push('');
+                        }
+                    } catch (noteErr) {
+                        console.warn(`Slide ${slideIndex} ノート解析スキップ:`, noteErr);
+                    }
+                }
+            } catch (slideErr: any) {
+                console.warn(`Slide ${slideIndex} 解析失敗 (部分救済):`, slideErr);
+                lines.push(`## 🖼️ Slide ${slideIndex}: (スライド ${slideIndex})`);
+                lines.push(`> [!WARNING] このスライドのテキスト抽出中にエラーが発生しました: ${slideErr?.message || slideErr}`);
+                lines.push('');
             }
         }
 
@@ -85,7 +97,7 @@ export class PptxParser {
             if (!node) return;
             if (typeof node === 'string') return;
 
-            // <a:p> (段落) 内の <a:r>/<a:t> を連結して段落単位にする
+            // <a:p> (段落) 内のテキストを抽出
             if (node['a:p']) {
                 const paragraphs = Array.isArray(node['a:p']) ? node['a:p'] : [node['a:p']];
                 for (const p of paragraphs) {
@@ -94,10 +106,10 @@ export class PptxParser {
                         results.push(pText.trim());
                     }
                 }
-                return;
             }
 
             for (const key of Object.keys(node)) {
+                if (key === 'a:p') continue; // 既に処理済み
                 const val = node[key];
                 if (Array.isArray(val)) {
                     for (const item of val) {

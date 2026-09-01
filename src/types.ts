@@ -83,6 +83,15 @@ export interface SourceConnectorAdapter {
     download(item: SourceItemRef): Promise<{ buffer: ArrayBuffer; filename: string }>;
 }
 
+export interface TranscriptionErrorEntry {
+    fileName: string;
+    fileSize: number;
+    actualBytesRead: number;
+    errorMessage: string;
+    stackTrace?: string;
+    timestamp: string;
+}
+
 export interface NotebookSource {
     name: string;
     path: string; // Relative path in Obsidian vault
@@ -91,6 +100,7 @@ export interface NotebookSource {
     addedAt: string;
     origin?: SourceOrigin;
     convertedFrom?: string; // バイナリから変換された場合の元ファイル名
+    transcriptionError?: TranscriptionErrorEntry; // 変換失敗時のエラー詳細
 }
 
 export interface NotebookArtifact {

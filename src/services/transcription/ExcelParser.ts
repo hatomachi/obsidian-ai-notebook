@@ -6,6 +6,9 @@ export class ExcelParser {
      */
     public static parse(data: Buffer | ArrayBuffer, originalFilename: string): string {
         const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        if (buffer.length === 0) {
+            throw new Error('ファイルデータが空（0バイト）です。ファイルが正しく保存・同期されているか確認してください。');
+        }
         const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true, cellFormula: true });
 
         const lines: string[] = [];

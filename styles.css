@@ -398,6 +398,51 @@
     background-color: var(--background-modifier-error-hover);
 }
 
+.ai-notebook-item-retry-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-accent);
+    cursor: pointer;
+    display: flex;
+    padding: 4px;
+    border-radius: 4px;
+    transition: transform 0.2s ease;
+}
+
+.ai-notebook-item-retry-btn:hover {
+    color: var(--text-accent-hover);
+    background-color: var(--background-modifier-hover);
+    transform: rotate(30deg);
+}
+
+.ai-notebook-item-retry-btn.is-loading {
+    animation: spin 1s linear infinite;
+    pointer-events: none;
+    opacity: 0.6;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.ai-notebook-badge-error {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--text-error);
+    background-color: rgba(var(--text-error-rgb, 235, 87, 87), 0.15);
+    border-radius: 4px;
+    padding: 1px 5px;
+    width: fit-content;
+    margin-top: 2px;
+    cursor: pointer;
+    border: 1px solid rgba(var(--text-error-rgb, 235, 87, 87), 0.3);
+}
+
+.ai-notebook-badge-error:hover {
+    background-color: rgba(var(--text-error-rgb, 235, 87, 87), 0.25);
+}
+
 /* Center Panel: Chat */
 .ai-notebook-panel-chat {
     background-color: var(--background-primary);
