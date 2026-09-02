@@ -1,4 +1,4 @@
-import { App, TFile, TFolder, parseYaml, stringifyYaml, normalizePath } from 'obsidian';
+import { App, TFile, TFolder, parseYaml, stringifyYaml, normalizePath, FileSystemAdapter } from 'obsidian';
 import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AINotebookSettings, SystemKnowledge, DocumentTemplate, SourceOrigin, TranscriptionErrorEntry } from '../types';
 import { TranscriptionService } from './transcription/TranscriptionService';
 import { BoundFolderReader } from './BoundFolderReader';
@@ -481,6 +481,12 @@ export class NotebookManager {
             return [];
         }
 
+        let vaultBasePath = '';
+        const adapter = this.app.vault.adapter;
+        if (adapter instanceof FileSystemAdapter) {
+            vaultBasePath = adapter.getBasePath();
+        }
+
         const contexts: import('../types').LinkedContext[] = [];
 
         for (const linkedId of metadata.linkedNotebookIds) {
@@ -492,18 +498,15 @@ export class NotebookManager {
 
             for (const art of artifacts) {
                 const artFile = this.app.vault.getAbstractFileByPath(art.path);
+                const absPath = vaultBasePath ? path.join(vaultBasePath, art.path) : art.path;
                 if (artFile instanceof TFile) {
-                    try {
-                        const content = await this.app.vault.read(artFile);
-                        loadedArtifacts.push({
-                            name: art.id,
-                            title: art.title,
-                            path: art.path,
-                            content: content
-                        });
-                    } catch (e) {
-                        console.warn(`Failed to read artifact ${art.path} for linked context:`, e);
-                    }
+                    loadedArtifacts.push({
+                        name: art.id,
+                        title: art.title,
+                        path: art.path,
+                        absolutePath: absPath,
+                        size: artFile.stat.size
+                    });
                 }
             }
 

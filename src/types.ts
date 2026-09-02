@@ -46,8 +46,10 @@ export interface ChatSession extends ChatSessionMetadata {
 export interface LinkedArtifact {
     name: string;
     title: string;
-    path: string;
-    content: string;
+    path: string; // Relative path in Obsidian vault
+    absolutePath?: string; // Absolute filesystem path
+    size?: number; // File size in bytes
+    content?: string; // Optional (legacy or explicit retrieval)
 }
 
 export interface LinkedContext {

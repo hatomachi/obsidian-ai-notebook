@@ -335,21 +335,26 @@ export function buildDirectEditSystemPrompt(userPrompt: string, options: AgentOp
     // 3. リンクされた参照コンテキスト (Linked Notebooks)
     if (options.linkedContexts && options.linkedContexts.length > 0) {
         prompt += `【参照コンテキスト（Linked Notebooks / 知識・ルール・過去サンプル）】\n`;
-        prompt += `以下はこのタスクに関連付けられた別のノートブックから読み込まれた成果物（システム仕様、ドキュメントルール、高品質サンプル等）です。これらを深く理解し、用語・章立て・注意点・過去トラブル教訓をドキュメント生成やレビューに反映してください。\n\n`;
+        prompt += `以下はこのタスクに関連付けられた別のノートブックの成果物一覧（システム仕様、ドキュメントルール、高品質サンプル等）です。\n`;
+        prompt += `※必要に応じて、ツール（view_file / Read File / cat 等）を使って以下の絶対パスのファイルを直接読み込み、用語・章立て・注意点・過去トラブル教訓を把握した上でドキュメント生成やレビューに反映してください。\n\n`;
 
         for (const ctx of options.linkedContexts) {
             prompt += `### 📘 参照ノートブック: "${ctx.notebookTitle}"\n`;
             if (ctx.description) {
-                prompt += `説明: ${ctx.description}\n`;
+                prompt += `- 説明: ${ctx.description}\n`;
             }
             if (ctx.artifacts.length > 0) {
+                prompt += `- 参照可能成果物一覧:\n`;
                 for (const art of ctx.artifacts) {
-                    prompt += `\n--- 成果物: ${art.title} (${art.name}) ---\n`;
-                    prompt += `${art.content}\n`;
-                    prompt += `--- 終了: ${art.title} ---\n`;
+                    const filePath = art.absolutePath || art.path;
+                    const sizeStr = art.size !== undefined ? ` (${art.size} bytes)` : '';
+                    prompt += `  * 成果物: "${art.title}" (${art.name})${sizeStr}\n    絶対パス: "${filePath}"\n`;
+                    if (art.content && !art.absolutePath) {
+                        prompt += `    --- 内容 ---\n${art.content}\n    --- 終了 ---\n`;
+                    }
                 }
             } else {
-                prompt += `(この参照ノートブックにはまだ成果物がありません)\n`;
+                prompt += `- (この参照ノートブックにはまだ成果物がありません)\n`;
             }
             prompt += `\n`;
         }
