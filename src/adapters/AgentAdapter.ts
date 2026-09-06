@@ -6,7 +6,7 @@ import * as os from 'os';
 
 export const execAsync = promisify(exec);
 
-import { LinkedContext, ChatMessage } from '../types';
+import { LinkedContext, ChatMessage, MattermostChannelRef } from '../types';
 
 export interface AgentOptions {
     notebookDir: string;  // 当該ノートブックのルート絶対パス (<rootDir>/notebooks/<id>)。CLI の cwd
@@ -17,6 +17,7 @@ export interface AgentOptions {
     linkedContexts?: LinkedContext[]; // リンクされた別ノートブックの成果物・ナレッジ群
     chatHistory?: ChatMessage[];      // 直近の会話履歴（マルチターン文脈）
     boundFolderTreeText?: string;     // バインドされた外部フォルダ資産の階層ツリー概要（読み取り専用・実パス秘匿）
+    boundMmChannels?: MattermostChannelRef[]; // 連携されたMattermostチャンネル情報
     onStdoutChunk?: (chunk: string) => void; // ストリーミング用コールバック
     abortSignal?: AbortSignal;               // キャンセル用シグナル
     
@@ -368,6 +369,17 @@ export function buildDirectEditSystemPrompt(userPrompt: string, options: AgentOp
         prompt += `--- 外部フォルダツリー概要 ---\n`;
         prompt += `${options.boundFolderTreeText}\n`;
         prompt += `--- 外部フォルダツリーここまで ---\n\n`;
+    }
+
+    // 4.5. バインドされた社内チャット (Mattermost) チャンネル
+    if (options.boundMmChannels && options.boundMmChannels.length > 0) {
+        prompt += `【連携された社内チャット (Mattermost) チャンネル】\n`;
+        prompt += `このノートブックには以下の社内チャット（Mattermost）チャンネルのログがインプットとして同期されています。\n`;
+        for (const ch of options.boundMmChannels) {
+            const fileName = ch.sourceFileName || `mattermost_${ch.channelName}.md`;
+            prompt += `- 🏢 [${ch.teamName}] #${ch.displayName || ch.channelName} (ファイル: sources/${fileName}, 最終同期: ${ch.lastSyncedAt || '未同期'})\n`;
+        }
+        prompt += `※チャットでの直近のやり取りや過去ログの内容・決定事項・課題を把握してドキュメント作成・更新を行う場合は、上記ファイルを view_file ツール等で直接確認して反映してください。\n\n`;
     }
 
     // 5. 後方互換ドメイン知識・テンプレート

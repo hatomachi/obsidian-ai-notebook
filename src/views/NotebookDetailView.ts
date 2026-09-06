@@ -6,6 +6,7 @@ import { LinkNotebookModal } from './modals/LinkNotebookModal';
 import { BoundFolderExplorerModal } from './modals/BoundFolderExplorerModal';
 import { BindFolderModal } from './modals/BindFolderModal';
 import { TextInputModal } from './modals/TextInputModal';
+import { MattermostModal } from './modals/MattermostModal';
 import { BoundFolderReader } from '../services/BoundFolderReader';
 import { AgentFactory } from '../adapters/AgentFactory';
 import * as path from 'path';
@@ -297,6 +298,131 @@ export class AINotebookDetailView extends ItemView {
             const emptyBound = boundBody.createDiv({ cls: 'ai-notebook-empty-bound' });
             emptyBound.createDiv({ text: '外部フォルダは未バインドです', cls: 'ai-notebook-empty-text' });
             emptyBound.createDiv({ text: '「バインド設定」からファイルサーバー等のパスを登録できます', cls: 'ai-notebook-hint-text' });
+        }
+
+        // ==========================================
+        // 2.5. 💬 Mattermost 連携 (Mattermost Channels)
+        // ==========================================
+        const mmSection = panel.createDiv({ cls: 'ai-notebook-mm-section' });
+        const mmHeader = mmSection.createDiv({ cls: 'ai-notebook-panel-header' });
+        mmHeader.createEl('h3', { text: '💬 Mattermost 連携' });
+
+        const boundMmChannels = this.metadata?.boundMmChannels || [];
+        mmHeader.createSpan({ text: `${boundMmChannels.length}`, cls: 'ai-notebook-count-badge' });
+
+        const addMmBtn = mmHeader.createEl('button', {
+            cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-xs',
+            text: '+ チャンネル追加'
+        });
+        addMmBtn.onclick = () => {
+            if (!this.notebookId) return;
+            new MattermostModal(
+                this.app,
+                this.plugin,
+                this.notebookId,
+                'presets',
+                undefined,
+                async () => {
+                    await this.refresh(true);
+                }
+            ).open();
+        };
+
+        const mmBody = mmSection.createDiv({ cls: 'ai-notebook-mm-body' });
+        if (boundMmChannels.length === 0) {
+            const emptyMm = mmBody.createDiv({ cls: 'ai-notebook-empty-mm' });
+            emptyMm.createDiv({ text: 'Mattermost チャンネルは未連携です', cls: 'ai-notebook-empty-text' });
+            emptyMm.createDiv({ text: '「+ チャンネル追加」からお気に入りセットや全チャンネル検索で紐付けできます', cls: 'ai-notebook-hint-text' });
+        } else {
+            for (const ch of boundMmChannels) {
+                const card = mmBody.createDiv({ cls: 'ai-notebook-mm-channel-card' });
+                
+                const cardHeader = card.createDiv({ cls: 'ai-notebook-mm-card-header' });
+                const titleWrap = cardHeader.createDiv({ cls: 'ai-notebook-mm-card-title-wrap' });
+                titleWrap.createSpan({ text: `🏢 [${ch.teamName}]`, cls: 'ai-notebook-badge-team' });
+                titleWrap.createSpan({ text: ` #${ch.displayName || ch.channelName}`, cls: 'ai-notebook-mm-card-title' });
+
+                const deleteBtn = cardHeader.createEl('button', { cls: 'ai-notebook-item-delete-btn' });
+                setIcon(deleteBtn, 'x');
+                deleteBtn.setAttribute('title', 'このノートブックから連携を解除');
+                deleteBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    if (!this.notebookId) return;
+                    await this.plugin.notebookManager.unbindMattermostChannel(this.notebookId, ch.channelId);
+                    new Notice(`「#${ch.displayName || ch.channelName}」の連携を解除しました`);
+                    await this.refresh(false);
+                };
+
+                // 同期日時
+                const syncInfo = card.createDiv({ cls: 'ai-notebook-mm-sync-info' });
+                const dateStr = ch.lastSyncedAt ? new Date(ch.lastSyncedAt).toLocaleString('ja-JP') : '未同期';
+                syncInfo.createSpan({ text: `最終同期: ${dateStr}`, cls: 'ai-notebook-hint-text' });
+
+                // ボタンアクション行
+                const actionRow = card.createDiv({ cls: 'ai-notebook-mm-card-actions' });
+                
+                const catchUpBtn = actionRow.createEl('button', {
+                    cls: 'ai-notebook-btn ai-notebook-btn-primary ai-notebook-btn-xs',
+                    text: '🔄 最新に追いつく'
+                });
+                catchUpBtn.setAttribute('title', '前回の取得以降の新着投稿・スレッド返信を差分追記します');
+
+                catchUpBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    if (!this.notebookId) return;
+
+                    catchUpBtn.disabled = true;
+                    catchUpBtn.setText('🔄 取得中...');
+
+                    try {
+                        const sinceTimestamp = ch.lastSyncedAt ? new Date(ch.lastSyncedAt).getTime() : undefined;
+                        const res = await this.plugin.mattermostService.fetchAndFormatPosts(ch, {
+                            perPage: 50,
+                            since: sinceTimestamp,
+                            isCatchUp: true
+                        });
+
+                        if (res.postCount === 0 || !res.markdown) {
+                            new Notice(`「#${ch.displayName || ch.channelName}」に新着メッセージはありません（最新です）`);
+                        } else {
+                            await this.plugin.notebookManager.appendMattermostDiff(
+                                this.notebookId,
+                                ch.channelId,
+                                res.markdown,
+                                res.latestPostId,
+                                res.latestCreateAt
+                            );
+                            new Notice(`「#${ch.displayName || ch.channelName}」から新着 ${res.postCount} 件を取り込みました`);
+                            await this.refresh(true);
+                        }
+                    } catch (err: any) {
+                        new Notice(`追いつき同期エラー: ${err.message || err}`);
+                        console.error('[NotebookDetailView] Catch-up error:', err);
+                    } finally {
+                        catchUpBtn.disabled = false;
+                        catchUpBtn.setText('🔄 最新に追いつく');
+                    }
+                };
+
+                const searchBtn = actionRow.createEl('button', {
+                    cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-xs',
+                    text: '🔎 過去ログ検索'
+                });
+                searchBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    if (!this.notebookId) return;
+                    new MattermostModal(
+                        this.app,
+                        this.plugin,
+                        this.notebookId,
+                        'searchPosts',
+                        ch,
+                        async () => {
+                            await this.refresh(true);
+                        }
+                    ).open();
+                };
+            }
         }
 
         // ==========================================
@@ -979,6 +1105,7 @@ export class AINotebookDetailView extends ItemView {
                 maxTurns: this.plugin.settings.maxTurns || 15,
                 linkedContexts: linkedContexts,
                 boundFolderTreeText: boundFolderTreeText,
+                boundMmChannels: this.metadata?.boundMmChannels || [],
                 chatHistory: this.currentSession.messages.filter(m => m.id !== loadingMsgId),
                 onStdoutChunk: onStdoutChunk,
                 abortSignal: this.abortController.signal

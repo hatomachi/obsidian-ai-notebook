@@ -27,6 +27,7 @@ export interface NotebookMetadata {
     linkedNotebookIds?: string[];
     activeSessionId?: string;
     boundFolderPath?: string; // 🗄️ Notebook単位のバインド外部フォルダ絶対パス (CIFS/ローカル共有)
+    boundMmChannels?: MattermostChannelRef[]; // 💬 ノートブック単位のバインドMattermostチャンネル一覧
     systemId?: string; // 後方互換用
     templateId?: string; // 後方互換用
 }
@@ -125,6 +126,80 @@ export interface ChatMessage {
 
 export type AIAgentType = 'antigravity' | 'claude';
 
+export interface MattermostChannelRef {
+    teamId: string;
+    teamName: string;
+    channelId: string;
+    channelName: string;
+    displayName: string;
+    lastSyncedPostId?: string;
+    lastSyncedAt?: string; // ISO 8601 または タイムスタンプ文字列
+    sourceFileName?: string; // sources/配下のファイル名 (例: mattermost_apigw-dev.md)
+}
+
+export interface MattermostPreset {
+    id: string;
+    name: string;
+    channels: {
+        teamId: string;
+        teamName: string;
+        channelId: string;
+        channelName: string;
+        displayName: string;
+    }[];
+}
+
+export interface MattermostTeam {
+    id: string;
+    name: string;
+    display_name: string;
+    description?: string;
+}
+
+export interface MattermostChannel {
+    id: string;
+    team_id: string;
+    name: string;
+    display_name: string;
+    type: 'O' | 'P' | 'D' | 'G'; // Open, Private, Direct, Group
+    purpose?: string;
+    header?: string;
+}
+
+export interface MattermostPost {
+    id: string;
+    create_at: number;
+    update_at: number;
+    delete_at: number;
+    edit_at: number;
+    user_id: string;
+    channel_id: string;
+    root_id: string;
+    original_id: string;
+    message: string;
+    type: string;
+    props?: Record<string, any>;
+    hashtags?: string;
+    filenames?: string[];
+    file_ids?: string[];
+}
+
+export interface MattermostPostList {
+    order: string[];
+    posts: Record<string, MattermostPost>;
+    next_post_id?: string;
+    prev_post_id?: string;
+}
+
+export interface MattermostUser {
+    id: string;
+    username: string;
+    first_name?: string;
+    last_name?: string;
+    nickname?: string;
+    email?: string;
+}
+
 export interface AINotebookSettings {
     rootDir: string;
     activeAgent: AIAgentType;
@@ -133,6 +208,9 @@ export interface AINotebookSettings {
     defaultModel: string;
     maxTurns: number;
     sharedFolderBasePath?: string; // CIFS / ローカル共有フォルダの起点パス
+    mattermostUrl?: string;        // Mattermost サーバーURL (例: https://mattermost.internal.company.com)
+    mattermostToken?: string;      // Personal Access Token (PAT)
+    mattermostPresets?: MattermostPreset[]; // お気に入りチャンネルセット
 }
 
 export const DEFAULT_SETTINGS: AINotebookSettings = {
@@ -142,6 +220,10 @@ export const DEFAULT_SETTINGS: AINotebookSettings = {
     claudePath: 'claude',
     defaultModel: '',
     maxTurns: 15,
-    sharedFolderBasePath: ''
+    sharedFolderBasePath: '',
+    mattermostUrl: '',
+    mattermostToken: '',
+    mattermostPresets: []
 };
+
 

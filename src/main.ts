@@ -2,12 +2,14 @@ import { Plugin, WorkspaceLeaf } from 'obsidian';
 import { AINotebookSettings, DEFAULT_SETTINGS } from './types';
 import { AINotebookSettingTab } from './settings';
 import { NotebookManager } from './services/NotebookManager';
+import { MattermostService } from './services/MattermostService';
 import { AINotebookGalleryView, VIEW_TYPE_GALLERY } from './views/GalleryView';
 import { AINotebookDetailView, VIEW_TYPE_DETAIL } from './views/NotebookDetailView';
 
 export default class AINotebookPlugin extends Plugin {
     settings!: AINotebookSettings;
     notebookManager!: NotebookManager;
+    mattermostService!: MattermostService;
 
     async onload(): Promise<void> {
         console.log('Loading Obsidian AI Notebook Plugin');
@@ -15,6 +17,7 @@ export default class AINotebookPlugin extends Plugin {
         await this.loadSettings();
 
         this.notebookManager = new NotebookManager(this.app, this.settings);
+        this.mattermostService = new MattermostService(this.settings);
 
         // 基本フォルダ構造の自動作成
         this.app.workspace.onLayoutReady(async () => {
@@ -116,6 +119,9 @@ export default class AINotebookPlugin extends Plugin {
         await this.saveData(this.settings);
         if (this.notebookManager) {
             this.notebookManager.settings = this.settings;
+        }
+        if (this.mattermostService) {
+            this.mattermostService.updateSettings(this.settings);
         }
     }
 }

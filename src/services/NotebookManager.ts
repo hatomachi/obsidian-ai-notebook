@@ -1,5 +1,5 @@
 import { App, TFile, TFolder, parseYaml, stringifyYaml, normalizePath, FileSystemAdapter } from 'obsidian';
-import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AINotebookSettings, SystemKnowledge, DocumentTemplate, SourceOrigin, TranscriptionErrorEntry } from '../types';
+import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AINotebookSettings, SystemKnowledge, DocumentTemplate, SourceOrigin, TranscriptionErrorEntry, MattermostChannelRef } from '../types';
 import { TranscriptionService } from './transcription/TranscriptionService';
 import { BoundFolderReader } from './BoundFolderReader';
 import * as path from 'path';
@@ -413,6 +413,7 @@ export class NotebookManager {
             linkedNotebookIds: yaml.linked_notebook_ids || yaml.linkedNotebookIds || [],
             activeSessionId: yaml.active_session_id || yaml.activeSessionId || undefined,
             boundFolderPath: yaml.bound_folder_path || yaml.boundFolderPath || undefined,
+            boundMmChannels: yaml.bound_mm_channels || yaml.boundMmChannels || [],
             systemId: yaml.system_id || undefined,
             templateId: yaml.template_id || undefined
         };
@@ -459,6 +460,7 @@ export class NotebookManager {
         };
         if (updated.activeSessionId) frontmatterObj.active_session_id = updated.activeSessionId;
         if (updated.boundFolderPath !== undefined) frontmatterObj.bound_folder_path = updated.boundFolderPath;
+        if (updated.boundMmChannels !== undefined) frontmatterObj.bound_mm_channels = updated.boundMmChannels;
         if (updated.systemId) frontmatterObj.system_id = updated.systemId;
         if (updated.templateId) frontmatterObj.template_id = updated.templateId;
 
@@ -1314,4 +1316,152 @@ export class NotebookManager {
             await this.app.vault.create(filePath, fullContent);
         }
     }
+
+    /**
+     * ノートブックに Mattermost チャンネルをバインドし、初回ログ Markdown を sources/ に保存
+     */
+    async bindMattermostChannel(
+        notebookId: string,
+        channel: MattermostChannelRef,
+        initialMarkdown: string
+    ): Promise<TFile> {
+        const metadata = await this.getNotebookMetadata(notebookId);
+        if (!metadata) {
+            throw new Error(`ノートブックが見つかりません: ${notebookId}`);
+        }
+
+        const safeChannelName = (channel.channelName || 'channel').replace(/[^a-zA-Z0-9_\-]/g, '_');
+        const fileName = channel.sourceFileName || `mattermost_${safeChannelName}.md`;
+        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sources`);
+        await this.ensureFolder(sourcesDir);
+
+        const filePath = normalizePath(`${sourcesDir}/${fileName}`);
+        const existing = this.app.vault.getAbstractFileByPath(filePath);
+        let resultFile: TFile;
+        if (existing instanceof TFile) {
+            await this.app.vault.modify(existing, initialMarkdown);
+            resultFile = existing;
+        } else {
+            resultFile = await this.app.vault.create(filePath, initialMarkdown);
+        }
+
+        // メタデータのバインドリストを更新
+        const currentChannels = metadata.boundMmChannels || [];
+        const updatedRef: MattermostChannelRef = {
+            ...channel,
+            sourceFileName: fileName,
+            lastSyncedAt: channel.lastSyncedAt || new Date().toISOString()
+        };
+
+        const nextChannels = currentChannels.filter(c => c.channelId !== channel.channelId);
+        nextChannels.push(updatedRef);
+
+        await this.updateNotebookMetadata(notebookId, {
+            boundMmChannels: nextChannels
+        });
+
+        return resultFile;
+    }
+
+    /**
+     * ノートブックから Mattermost チャンネルのバインドを解除
+     */
+    async unbindMattermostChannel(notebookId: string, channelId: string): Promise<void> {
+        const metadata = await this.getNotebookMetadata(notebookId);
+        if (!metadata) return;
+
+        const currentChannels = metadata.boundMmChannels || [];
+        const nextChannels = currentChannels.filter(c => c.channelId !== channelId);
+
+        await this.updateNotebookMetadata(notebookId, {
+            boundMmChannels: nextChannels
+        });
+    }
+
+    /**
+     * Mattermost 差分ログを sources/<file> に追記し、メタデータの同期時刻を更新（追いつき同期）
+     */
+    async appendMattermostDiff(
+        notebookId: string,
+        channelId: string,
+        diffMarkdown: string,
+        latestPostId?: string,
+        latestCreateAt?: number
+    ): Promise<void> {
+        const metadata = await this.getNotebookMetadata(notebookId);
+        if (!metadata) throw new Error(`ノートブックが見つかりません: ${notebookId}`);
+
+        const currentChannels = metadata.boundMmChannels || [];
+        const ch = currentChannels.find(c => c.channelId === channelId);
+        if (!ch) throw new Error(`対象チャンネルがバインドされていません: ${channelId}`);
+
+        const fileName = ch.sourceFileName || `mattermost_${ch.channelName}.md`;
+        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sources`);
+        const filePath = normalizePath(`${sourcesDir}/${fileName}`);
+        const file = this.app.vault.getAbstractFileByPath(filePath);
+
+        if (file instanceof TFile) {
+            const currentContent = await this.app.vault.read(file);
+            const newContent = currentContent + diffMarkdown;
+            await this.app.vault.modify(file, newContent);
+        } else {
+            await this.app.vault.create(filePath, diffMarkdown);
+        }
+
+        // メタデータ更新
+        const updatedChannels = currentChannels.map(c => {
+            if (c.channelId === channelId) {
+                return {
+                    ...c,
+                    lastSyncedPostId: latestPostId || c.lastSyncedPostId,
+                    lastSyncedAt: latestCreateAt ? new Date(latestCreateAt).toISOString() : new Date().toISOString()
+                };
+            }
+            return c;
+        });
+
+        await this.updateNotebookMetadata(notebookId, {
+            boundMmChannels: updatedChannels
+        });
+    }
+
+    /**
+     * Mattermost 検索結果ログを sources/ に独立保存
+     */
+    async addMattermostSearchSource(notebookId: string, query: string, markdown: string): Promise<TFile> {
+        const safeQuery = query.replace(/[^a-zA-Z0-9_\-\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/g, '_').slice(0, 30);
+        const fileName = `mattermost_search_${safeQuery}_${Date.now()}.md`;
+        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sources`);
+        await this.ensureFolder(sourcesDir);
+
+        const filePath = normalizePath(`${sourcesDir}/${fileName}`);
+        return await this.app.vault.create(filePath, markdown);
+    }
+
+    /**
+     * 全ノートブックで過去にバインドされたチャンネル一覧を収集（再利用用）
+     */
+    async getAllBoundMattermostChannels(): Promise<{ channel: MattermostChannelRef; notebookTitle: string; notebookId: string }[]> {
+        const allNotebooks = await this.getAllNotebooks();
+        const results: { channel: MattermostChannelRef; notebookTitle: string; notebookId: string }[] = [];
+        const seen = new Set<string>();
+
+        for (const nb of allNotebooks) {
+            if (nb.boundMmChannels && nb.boundMmChannels.length > 0) {
+                for (const ch of nb.boundMmChannels) {
+                    const key = `${nb.id}:${ch.channelId}`;
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        results.push({
+                            channel: ch,
+                            notebookTitle: nb.title,
+                            notebookId: nb.id
+                        });
+                    }
+                }
+            }
+        }
+        return results;
+    }
 }
+
