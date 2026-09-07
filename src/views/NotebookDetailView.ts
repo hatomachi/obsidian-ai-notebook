@@ -1,6 +1,6 @@
 import { ItemView, WorkspaceLeaf, setIcon, TFile, Notice, FileSystemAdapter, MarkdownRenderer } from 'obsidian';
 import type AINotebookPlugin from '../main';
-import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AgentDebugInfo } from '../types';
+import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AgentDebugInfo, AgentMode, AGENT_MODE_LABELS } from '../types';
 import { ArtifactModal } from './modals/ArtifactModal';
 import { LinkNotebookModal } from './modals/LinkNotebookModal';
 import { BoundFolderExplorerModal } from './modals/BoundFolderExplorerModal';
@@ -29,6 +29,9 @@ export class AINotebookDetailView extends ItemView {
     currentSessionId: string | null = null;
     currentSession: ChatSession | null = null;
     chatHistory: ChatMessage[] = [];
+
+    // 実行モード（相談=読み取りのみ / 作成=成果物を書く）。既定は相談。
+    currentMode: AgentMode = 'consult';
 
     // エージェント実行・キャンセル状態
     isExecuting: boolean = false;
@@ -926,6 +929,24 @@ export class AINotebookDetailView extends ItemView {
                 }
             };
         } else {
+            // 実行モード切替。Claude Code の --permission-mode にそのまま対応する。
+            const modeToggle = inputArea.createDiv({ cls: 'ai-notebook-mode-toggle' });
+            (['consult', 'build'] as AgentMode[]).forEach((m) => {
+                const btn = modeToggle.createEl('button', {
+                    cls: 'ai-notebook-mode-btn' + (this.currentMode === m ? ' is-active' : ''),
+                    text: AGENT_MODE_LABELS[m]
+                });
+                btn.setAttribute('title', m === 'consult'
+                    ? '読み取りのみ。計画や構成案を返します (--permission-mode plan)'
+                    : '成果物を artifacts/ に作成・編集します (--permission-mode bypassPermissions)');
+                btn.onclick = () => {
+                    if (this.currentMode === m) return;
+                    this.currentMode = m;
+                    modeToggle.findAll('.ai-notebook-mode-btn').forEach(el => el.removeClass('is-active'));
+                    btn.addClass('is-active');
+                };
+            });
+
             const sendBtn = inputArea.createEl('button', { cls: 'ai-notebook-btn ai-notebook-btn-primary' });
             setIcon(sendBtn, 'send');
             sendBtn.setAttribute('title', '送信 (Ctrl+Enter / Cmd+Enter / Enter)');
@@ -1258,17 +1279,24 @@ export class AINotebookDetailView extends ItemView {
                 contextDir: sourcesDirAbs,
                 outputDir: artifactsDirAbs,
                 commandPath: commandPath,
-                maxTurns: this.plugin.settings.maxTurns || 15,
                 linkedContexts: linkedContexts,
                 notebookTitle: this.metadata?.title,
                 notebookDescription: this.metadata?.description,
                 boundFolderPath: effectiveBoundPath || undefined,
                 boundFolderTreeText: boundFolderTreeText,
                 boundMmChannels: this.metadata?.boundMmChannels || [],
-                chatHistory: this.currentSession.messages.filter(m => m.id !== loadingMsgId),
+                // 対話履歴はテキストで再注入せず、CLI 側のセッションを --resume で引き継ぐ
+                mode: this.currentMode,
+                agentSessionId: this.currentSession.agentSessionId,
+                resumeSession: !!this.currentSession.agentSessionId,
                 onStdoutChunk: onStdoutChunk,
                 abortSignal: this.abortController.signal
             });
+
+            // CLI 側セッションIDを保存し、次ターン以降は --resume で継続する
+            if (result.sessionId) {
+                this.currentSession.agentSessionId = result.sessionId;
+            }
 
             // 4. 成果物差分の集計
             const allArtifactsTouched = [
@@ -1301,30 +1329,9 @@ export class AINotebookDetailView extends ItemView {
                 this.currentSession.messages.push(finalAgentMsg);
             }
 
-            // 5. 差分検出時の通知および後方互換コードブロック抽出
-            if (uniqueTouched.length > 0) {
-                for (const artName of uniqueTouched) {
-                    new Notice(`成果物 "${artName}" が作成/更新されました`);
-                }
-            } else {
-                // 差分が検出されなかった場合の後方互換フォールバック（コードブロック抽出）
-                const fallbackCreated: string[] = [];
-                const codeBlockRegex = /```(?:markdown:([^\n]+)|([a-zA-Z0-9_\-.]+?\.md))\n([\s\S]*?)```/g;
-                let match;
-                while ((match = codeBlockRegex.exec(result.text)) !== null) {
-                    const title = (match[1] || match[2] || '').trim();
-                    const content = match[3].trim();
-                    if (title) {
-                        const cleanTitle = title.endsWith('.md') ? title.slice(0, -3) : title;
-                        await this.plugin.notebookManager.addArtifactFile(this.notebookId, cleanTitle, content);
-                        fallbackCreated.push(`${cleanTitle}.md`);
-                        new Notice(`成果物 "${cleanTitle}" が生成されました`);
-                    }
-                }
-
-                if (fallbackCreated.length > 0) {
-                    finalAgentMsg.artifactsGenerated = fallbackCreated;
-                }
+            // 5. 成果物差分の通知
+            for (const artName of uniqueTouched) {
+                new Notice(`成果物 "${artName}" が作成/更新されました`);
             }
 
             await this.plugin.notebookManager.saveChatSession(this.notebookId, this.currentSession);
@@ -1384,7 +1391,15 @@ export class AINotebookDetailView extends ItemView {
 - **作業ディレクトリ (CWD)**: \`${debug.cwd}\`
 - **所要時間**: ${debug.durationMs.toLocaleString()} ms (${durationSec}秒)
 - **終了コード**: \`${debug.exitCode ?? '不明'}\`
+- **CLI セッションID**: \`${debug.sessionId || '未取得'}\`
 - **成果物差分**: 新規 ${created.length}件 (${created.join(', ') || 'なし'}), 更新 ${modified.length}件 (${modified.join(', ') || 'なし'})
+${debug.error ? `- **⚠️ エラー**: ${debug.error}\n` : ''}
+---
+
+## 0. 実行されたツール
+${debug.toolUses && debug.toolUses.length > 0
+    ? debug.toolUses.map(t => `- \`${t}\``).join('\n')
+    : '*(ツール実行の記録なし。ファイルを書いていない場合、ここが空になります)*'}
 
 ---
 

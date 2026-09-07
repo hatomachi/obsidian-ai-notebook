@@ -6,8 +6,7 @@ import * as os from 'os';
 
 export const execAsync = promisify(exec);
 
-import { LinkedContext, ChatMessage, MattermostChannelRef, AgentDebugInfo } from '../types';
-import { AGENT_CHARTER } from './AgentCharter';
+import { LinkedContext, MattermostChannelRef, AgentDebugInfo, AgentMode } from '../types';
 import { ensureNotebookProject, buildClaudeMdContent, NotebookProjectResult } from '../services/NotebookProjectFile';
 
 export interface AgentOptions {
@@ -15,20 +14,24 @@ export interface AgentOptions {
     sourcesDir: string;   // 当該ノートブック sources/ の絶対パス
     artifactsDir: string; // 当該ノートブック artifacts/ の絶対パス
     commandPath: string;  // 実行パス (agy, claude, etc.)
-    maxTurns?: number;    // 最大ターン数（デフォルト: 15）
     linkedContexts?: LinkedContext[]; // リンクされた別ノートブックの成果物・ナレッジ群
-    chatHistory?: ChatMessage[];      // 直近の会話履歴（マルチターン文脈）
     boundFolderTreeText?: string;     // バインドされた外部フォルダ資産の階層ツリー概要（読み取り専用・実パス秘匿）
     boundMmChannels?: MattermostChannelRef[]; // 連携されたMattermostチャンネル情報
     onStdoutChunk?: (chunk: string) => void; // ストリーミング用コールバック
     abortSignal?: AbortSignal;               // キャンセル用シグナル
 
+    /** 実行モード。CLI の --permission-mode にマップされる。既定は 'consult' */
+    mode?: AgentMode;
+
+    /** CLI 会話セッションID (UUID)。プラグイン側で採番する */
+    agentSessionId?: string;
+    /** true なら --resume、false なら --session-id で新規開始 */
+    resumeSession?: boolean;
+
     // L1: ノートブックフォルダをプロジェクト化するためのメタ情報
     notebookTitle?: string;       // CLAUDE.md の見出しに使用
     notebookDescription?: string; // CLAUDE.md の概要に使用
     boundFolderPath?: string;     // バインド外部フォルダの絶対パス (--add-dir 対象)
-    /** 再実行時に先頭へ差し込むディレクティブ (成果物ゼロ時の自動リトライ用) */
-    retryDirective?: string;
     
     // 後方互換用
     contextDir?: string;
@@ -41,6 +44,8 @@ export interface AgentOptions {
 
 export interface AgentResult {
     text: string;
+    /** CLI が使用した会話セッションID。次ターンの --resume に使う */
+    sessionId?: string;
     artifactsCreated?: string[];
     artifactsModified?: string[];
     debugInfo?: AgentDebugInfo;
@@ -141,17 +146,6 @@ export function resolveCommandPath(command: string): string {
     }
 
     return command;
-}
-
-/**
- * プロンプトエスケープ
- */
-export function escapePrompt(promptText: string): string {
-    return promptText
-        .replace(/\\/g, '\\\\')
-        .replace(/"/g, '\\"')
-        .replace(/\$/g, '\\$')
-        .replace(/`/g, '\\`');
 }
 
 /**
@@ -331,23 +325,6 @@ export function runSpawnAgentDetailed(
 }
 
 /**
- * spawn を用いたエージェントプロセスのストリーミング実行（後方互換用）
- */
-export async function runSpawnAgent(
-    command: string,
-    args: string[],
-    options: {
-        cwd: string;
-        env: NodeJS.ProcessEnv;
-        onStdoutChunk?: (chunk: string) => void;
-        abortSignal?: AbortSignal;
-    }
-): Promise<string> {
-    const result = await runSpawnAgentDetailed(command, args, options);
-    return result.stdout;
-}
-
-/**
  * ノートブックフォルダをプロジェクト化し、cwd 外の読み取り対象ディレクトリを返す。
  * 各アダプタは CLI 実行前にこれを呼ぶ。
  */
@@ -367,70 +344,12 @@ export function prepareNotebookProject(options: AgentOptions): NotebookProjectRe
 }
 
 /**
- * L0 + L1: システムプロンプト（--append-system-prompt へ渡す）
+ * CLAUDE.md / AGENTS.md を自動で読み込まない CLI 向けのフォールバックプロンプト。
  *
- * 行動契約とパス情報のみ。ファイル一覧・参照コンテキスト・外部フォルダツリーは
- * ノートブック直下の CLAUDE.md に永続化済みで、CLI が自動で読み込む。
+ * Claude Code はプロジェクト直下の CLAUDE.md を自分で読むため、これは使わない。
+ * 振る舞いの指示は一切含めない（環境の説明のみ）。エージェントの判断には介入しない。
  */
-export function buildAgentSystemPrompt(options: AgentOptions): string {
-    const notebookDir = options.notebookDir || options.contextDir || process.cwd();
-    const sourcesDir = options.sourcesDir || path.join(notebookDir, 'sources');
-    const artifactsDir = options.artifactsDir || path.join(notebookDir, 'artifacts');
-
-    let prompt = `${AGENT_CHARTER}\n\n`;
-    prompt += `# 作業環境\n`;
-    prompt += `- カレント作業ディレクトリ (cwd): "${notebookDir}"\n`;
-    prompt += `- インプットフォルダ: "${sourcesDir}"\n`;
-    prompt += `- 成果物フォルダ: "${artifactsDir}"\n`;
-    prompt += `- このノートブックの構造・インプット一覧・参照コンテキストは、cwd 直下の CLAUDE.md に記載されています。\n`;
-    prompt += `  必要なファイルは Read / Glob 等のツールで直接読み込んでください。\n`;
-
-    // 後方互換: 明示的に注入されたドメイン知識・テンプレート
-    if (options.systemKnowledgeContent) {
-        prompt += `\n# ドメイン・システム知識 (${options.systemKnowledgeName || 'システム仕様'})\n`;
-        prompt += `${options.systemKnowledgeContent}\n`;
-    }
-    if (options.templateContent) {
-        prompt += `\n# ドキュメントフォーマット・作成基準 (${options.templateTitle || '指定テンプレート'})\n`;
-        prompt += `${options.templateContent}\n`;
-    }
-
-    return prompt;
-}
-
-/**
- * L4: ユーザーターン（stdin へ渡す）
- * 対話履歴と今回の指示のみ。ルールを混ぜないことで指示が希釈されるのを防ぐ。
- */
-export function buildUserTurn(userPrompt: string, options: AgentOptions): string {
-    let turn = '';
-
-    if (options.retryDirective) {
-        turn += `${options.retryDirective}\n`;
-    }
-
-    if (options.chatHistory && options.chatHistory.length > 0) {
-        const validHistory = options.chatHistory.filter(m => m.text && !m.text.startsWith('思考中...'));
-        if (validHistory.length > 0) {
-            turn += `【これまでの対話履歴（セッションの文脈）】\n`;
-            for (const msg of validHistory.slice(-15)) {
-                const senderLabel = msg.sender === 'user' ? 'ユーザー' : 'AI';
-                turn += `${senderLabel}: ${msg.text}\n\n`;
-            }
-            turn += `--- 対話履歴ここまで ---\n\n`;
-        }
-    }
-
-    turn += `【今回のユーザー指示】\n${userPrompt}\n`;
-    return turn;
-}
-
-/**
- * 単一プロンプトしか受け付けない CLI 向けの結合版（後方互換）。
- * システムプロンプト分離に対応していないエージェントでは、CLAUDE.md の内容も
- * インラインで同梱して同等の文脈を与える。
- */
-export function buildDirectEditSystemPrompt(userPrompt: string, options: AgentOptions): string {
+export function buildFallbackPrompt(userPrompt: string, options: AgentOptions): string {
     const notebookDir = options.notebookDir || options.contextDir || process.cwd();
     const projectContext = buildClaudeMdContent({
         notebookDir,
@@ -443,8 +362,7 @@ export function buildDirectEditSystemPrompt(userPrompt: string, options: AgentOp
         boundFolderTreeText: options.boundFolderTreeText,
         boundMmChannels: options.boundMmChannels
     });
-
-    return `${buildAgentSystemPrompt(options)}\n${projectContext}\n${buildUserTurn(userPrompt, options)}`;
+    return `${projectContext}\n\n---\n\n${userPrompt}\n`;
 }
 
 /**
@@ -485,4 +403,22 @@ export async function detectSupportedFlags(exePath: string, env: NodeJS.ProcessE
 /** テスト・設定変更時にフラグ検出キャッシュを破棄する */
 export function clearSupportedFlagCache(): void {
     supportedFlagCache.clear();
+}
+
+/** CLI 会話セッション用の UUID を採番する */
+export function newAgentSessionId(): string {
+    const g: any = globalThis as any;
+    if (g.crypto && typeof g.crypto.randomUUID === 'function') {
+        return g.crypto.randomUUID();
+    }
+    // フォールバック (RFC4122 v4 相当)
+    const hex = '0123456789abcdef';
+    let out = '';
+    for (let i = 0; i < 36; i++) {
+        if (i === 8 || i === 13 || i === 18 || i === 23) out += '-';
+        else if (i === 14) out += '4';
+        else if (i === 19) out += hex[(Math.random() * 4 | 0) + 8];
+        else out += hex[Math.random() * 16 | 0];
+    }
+    return out;
 }

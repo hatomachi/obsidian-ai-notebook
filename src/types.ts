@@ -41,6 +41,12 @@ export interface ChatSessionMetadata {
 }
 
 export interface ChatSession extends ChatSessionMetadata {
+    /**
+     * CLI 側の会話セッションID (UUID)。
+     * プラグイン側で採番し、初回は --session-id、2回目以降は --resume に渡す。
+     * これにより対話履歴をテキストで再注入する必要がなくなる。
+     */
+    agentSessionId?: string;
     messages: ChatMessage[];
 }
 
@@ -136,6 +142,10 @@ export interface AgentDebugInfo {
     exitCode: number | null;
     durationMs: number;
     error?: string;
+    /** stream-json から抽出したツール実行の痕跡 (例: "Write artifacts/x.md") */
+    toolUses?: string[];
+    /** CLI 側セッションID */
+    sessionId?: string;
 }
 
 export interface ChatMessage {
@@ -149,6 +159,20 @@ export interface ChatMessage {
 }
 
 export type AIAgentType = 'antigravity' | 'claude';
+
+/**
+ * エージェントの実行モード。
+ * Claude Code の --permission-mode にそのまま対応させる。
+ * 振る舞いをプロンプトで指示するのではなく、CLI 本来の権限モードで表現する。
+ *   consult -> plan              (読み取りのみ。計画を返す)
+ *   build   -> bypassPermissions (成果物を作成・編集する)
+ */
+export type AgentMode = 'consult' | 'build';
+
+export const AGENT_MODE_LABELS: Record<AgentMode, string> = {
+    consult: '相談',
+    build: '作成'
+};
 
 export interface MattermostChannelRef {
     teamId: string;
@@ -230,7 +254,6 @@ export interface AINotebookSettings {
     antigravityPath: string;
     claudePath: string;
     defaultModel: string;
-    maxTurns: number;
     sharedFolderBasePath?: string; // CIFS / ローカル共有フォルダの起点パス
     mattermostUrl?: string;        // Mattermost サーバーURL (例: https://mattermost.internal.company.com)
     mattermostToken?: string;      // Personal Access Token (PAT)
@@ -244,7 +267,6 @@ export const DEFAULT_SETTINGS: AINotebookSettings = {
     antigravityPath: 'agy',
     claudePath: 'claude',
     defaultModel: '',
-    maxTurns: 15,
     sharedFolderBasePath: '',
     mattermostUrl: '',
     mattermostToken: '',

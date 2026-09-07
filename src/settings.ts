@@ -62,18 +62,6 @@ export class AINotebookSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        new Setting(containerEl)
-            .setName('エージェント最大ターン数 (Max Turns)')
-            .setDesc('エージェント実行時の最大ターン数（暴走防止上限、デフォルト: 15）')
-            .addText(text => text
-                .setPlaceholder('15')
-                .setValue(String(this.plugin.settings.maxTurns || 15))
-                .onChange(async (value) => {
-                    const parsed = parseInt(value.trim(), 10);
-                    this.plugin.settings.maxTurns = isNaN(parsed) || parsed <= 0 ? 15 : parsed;
-                    await this.plugin.saveSettings();
-                }));
-
         containerEl.createEl('h3', { text: '外部ソース & ファイルサーバー設定' });
 
         new Setting(containerEl)

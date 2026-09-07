@@ -111,35 +111,122 @@
 
 ---
 
-## 4. AI エージェント抽象化構造 (Agent Adapter Architecture)
+## 4. AI エージェント実行モデル (Agent Execution Architecture)
 
-Antigravity CLI / Claude Code CLI 等の各種自律エージェントCLIツールと連携。
-ノートブックルートを作業ディレクトリ（`cwd`）としてエージェントに渡し、`artifacts/` 配下の成果物を直接作成・部分編集（Write/Edit）させます。
+### 4.0 設計原則: 薄いラッパーに徹する (Thin Wrapper Principle)
+
+**このプラグインはエージェントの振る舞いを設計しない。** CLI エージェント（Claude Code / Antigravity CLI）が本来持っている能力・判断・対話フローを、そのまま使えるようにするのが役割です。
+
+ラッパーの責務は次の5つに限定します。
+
+1. **箱を用意する** — ノートブックフォルダを作り、`sources/` `artifacts/` を整える
+2. **箱に文脈を書き出す** — `CLAUDE.md` / `AGENTS.md` を自動生成する
+3. **引数を組む** — 実行モード・参照ディレクトリ・セッションIDを CLI オプションに変換する
+4. **出力を読む** — `stream-json` を解釈して進捗・成果物・セッションIDを取り出す
+5. **箱をつなぐ** — ある箱の `artifacts/` を別の箱の参照コンテキストにする
+
+> **やらないこと（アンチパターン）**
+> 過去にこれらを実装して、いずれも実害が出たため撤去しました。同じ轍を踏まないこと。
+>
+> | やらないこと | 撤去理由 |
+> |---|---|
+> | 行動規範をシステムプロンプトに注入する | 「必ずファイルを作れ」の強制が、計画→レビュー→実装という健全な流れを壊した |
+> | 「非対話実行だ」とプロンプトで宣言する | 実態と異なる（会話は継続する）。一発で全部やろうとして品質が落ちた |
+> | 成果物ゼロ時の自動リトライ | 実行時間が倍になるだけで、原因（自己強化ループ）は解消しなかった |
+> | 対話履歴をテキストで再注入する | 前ターンの AI 発言をモデルが模倣し続け、失敗が自己強化された。`--resume` で代替 |
+> | 応答からコードブロックを抽出して成果物にする | 相談モード（読み取り専用）で誤って成果物が生えた |
+> | ファイル一覧を毎回プロンプトに列挙する | 巨大化して指示が希釈された。`CLAUDE.md` に永続化して CLI に読ませる |
+
+### 4.1 ノートブックフォルダ = CLI プロジェクト
+
+`cwd` をノートブックルートに置くだけでなく、**そのフォルダ自体を CLI が認識できるプロジェクトにします**（`src/services/NotebookProjectFile.ts`）。
+
+```
+notebooks/<id>/
+├── CLAUDE.md            # 自動生成・毎回上書き。CLI が自動探索して読む
+├── AGENTS.md            # 同内容（CLAUDE.md を読まない CLI 向け）
+├── NOTEBOOK.md          # 人間が育てる固有指示。自動生成では絶対に上書きしない
+├── .claude/settings.json# permissions.additionalDirectories のみ更新、他キーはマージ保持
+├── sources/             # 今回の直接インプット
+└── artifacts/           # 成果物の出力先
+```
+
+`CLAUDE.md` に載せるのは**環境の説明のみ**です（フォルダ構造、`sources/` と `artifacts/` のインベントリ、参照ノートブックの絶対パス、バインド外部フォルダのツリー、Mattermost 連携先）。振る舞いの指示は書きません。末尾で `@NOTEBOOK.md` を import し、業務固有のルールは人間が `NOTEBOOK.md` に書き溜めます。
+
+この構造の効能は、ターミナルから素の `claude` を叩いても**まったく同じ文脈で動く**ことです。不具合調査がプラグイン経由に閉じません。また、ノートブックフォルダごと Box や Git に置けば、他人の環境でもそのまま再現できます。
+
+### 4.2 実行モードは `--permission-mode` にマップする
+
+「計画だけ立てさせる」「実際に書かせる」の切り替えを、プロンプトではなく CLI 本来の権限モードで表現します。
+
+| モード | UI | `--permission-mode` | 振る舞い |
+|---|---|---|---|
+| `consult` | 相談（既定） | `plan` | 読み取りのみ。計画・構成案・論点を返す |
+| `build` | 作成 | `bypassPermissions` | `artifacts/` に成果物を作成・編集する |
+
+既定を「相談」にすることで、`指示 → 計画 → ユーザーレビュー → 実装` がプロンプト工夫ゼロで既定動線になります。「ファイルを作るな」と言う必要はありません。
+
+`--permission-mode` 非対応の旧版では `--dangerously-skip-permissions` に縮退します（相談モードでも書けてしまう点は許容）。
+
+### 4.3 会話の継続は `--resume` で行う
+
+対話履歴をテキストで再注入するのをやめ、**CLI 側の会話セッションをそのまま引き継ぎます**。
+
+- チャットセッション作成時にプラグイン側で UUID を採番し、`ChatSession.agentSessionId` に保持
+- 初回: `--session-id <uuid>` ／ 2回目以降: `--resume <uuid>`
+- `--resume` が失敗した場合（フォルダ移動、セッション欠落）のみ、新規採番で1回だけやり直す
+
+ID を自分で発番するので、出力パースに依存せず対応が決定的になります。`chat.json` / `sessions/*.json` の役割は「UI 表示用の履歴」に純化されます。
+
+### 4.4 出力は `stream-json` で読む
+
+`--output-format stream-json --verbose` で NDJSON を受け取り、`src/adapters/StreamJsonParser.ts` の `StreamJsonAccumulator` が解釈します。
+
+| 取り出すもの | 用途 |
+|---|---|
+| `tool_use` イベント | 進捗表示（`🔧 Write artifacts/見積.md`）、実行痕跡のログ記録 |
+| `tool_result` の `is_error` | 権限拒否・失敗の把握。**「ツールを呼んでいない」と「呼んで拒否された」を区別できる** |
+| `result` イベント | 最終応答テキスト、成否、ターン数、コスト |
+| `session_id` | セッション継続の検証 |
+
+素の stdout では「エージェントが何をしたか」が一切分からず、不具合の切り分けができませんでした。実行痕跡は `_last_agent_debug.md` の「0. 実行されたツール」節に残ります。
+
+### 4.5 CLI フラグは `--help` から検出する
+
+`detectSupportedFlags()` が `<cli> --help` を1回だけ実行して対応フラグを収集・キャッシュします。未対応のフラグは渡しません。
+
+CLI のバージョンによって利用可能なオプションは変わります（例: `--max-turns` は現行版に存在しない）。**新しいフラグを追加するときは必ず `supports('--flag')` でガードすること。** 直接 `args.push` してはいけません。検出に失敗した場合は最小限の引数のみに安全側で縮退します。
+
+### 4.6 インターフェース
 
 ```typescript
-export interface LinkedContext {
-    notebookId: string;
-    notebookTitle: string;
-    description: string;
-    artifacts: { name: string; title: string; path: string; content: string }[];
-}
-
 export interface AgentOptions {
-    notebookDir: string;       // 当該ノートブックルートの絶対パス (CLI cwd)
-    sourcesDir: string;        // 当該ノートブック sources/ フォルダの絶対パス
-    artifactsDir: string;      // 当該ノートブック artifacts/ フォルダの絶対パス
-    commandPath: string;       // agy / claude の実行パス
-    maxTurns?: number;         // ターン上限（暴走防止）
-    linkedContexts?: LinkedContext[];
-    chatHistory?: ChatMessage[]; // 直近の対話履歴（マルチターン文脈）
-    onStdoutChunk?: (chunk: string) => void; // ストリーミングコールバック
-    abortSignal?: AbortSignal;               // キャンセル用シグナル
+    notebookDir: string;        // ノートブックルートの絶対パス (CLI cwd)
+    sourcesDir: string;
+    artifactsDir: string;
+    commandPath: string;        // agy / claude の実行パス
+
+    mode?: AgentMode;           // 'consult' | 'build' -> --permission-mode
+    agentSessionId?: string;    // CLI 会話セッションID (UUID)
+    resumeSession?: boolean;    // true: --resume / false: --session-id
+
+    linkedContexts?: LinkedContext[];   // 参照ノートブックの成果物群
+    boundFolderPath?: string;           // バインド外部フォルダ (--add-dir 対象)
+    boundFolderTreeText?: string;
+    boundMmChannels?: MattermostChannelRef[];
+    notebookTitle?: string;             // CLAUDE.md 生成用
+    notebookDescription?: string;
+
+    onStdoutChunk?: (chunk: string) => void;
+    abortSignal?: AbortSignal;
 }
 
 export interface AgentResult {
     text: string;
+    sessionId?: string;          // 次ターンの --resume に使う
     artifactsCreated?: string[];
     artifactsModified?: string[];
+    debugInfo?: AgentDebugInfo;  // args / toolUses / stderr / exitCode ...
 }
 
 export interface AIAgentAdapter {
@@ -149,7 +236,15 @@ export interface AIAgentAdapter {
 }
 ```
 
----
+`executePrompt` に渡す `prompt` は**ユーザーの生の入力そのもの**です。加工しません（`stdin` 経由で渡し、argv 長制限 ARG_MAX を回避）。
+
+`AntigravityCliAdapter` だけは `CLAUDE.md` の自動読み込みが保証できないため、`buildFallbackPrompt()` で環境の説明のみを同梱します。この場合も振る舞いの指示は入れません。
+
+### 4.7 今後の拡張予定（未実装）
+
+- **ドキュメントレシピ (L3)**: 参照ノートブック内に `_recipe.md` を置き、文書種別ごとの章立て・必須インプット・レビュー観点を宣言する。文書種別の追加を「Markdown 資産を足すだけ」にし、TypeScript を触らずに済ませる
+- **外部資産のテキスト化キャッシュ**: バインド外部フォルダ（Box / CIFS）から、エージェントが指名したファイルだけを `.cache/` に取り込む2フェーズ方式
+- **`--model` / `--effort` の設定連携**: いずれも CLI ネイティブオプションの素通し
 
 ---
 
