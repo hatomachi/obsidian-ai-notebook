@@ -2,8 +2,6 @@ name: Release Obsidian Plugin
 
 on:
   push:
-    branches:
-      - main
     tags:
       - '*'
   workflow_dispatch:
@@ -12,6 +10,10 @@ on:
         description: 'Tag name for release (e.g. 0.1.0 or v0.1.0)'
         required: false
         default: ''
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -40,6 +42,13 @@ jobs:
 
       - name: Build plugin
         run: npm run build
+
+      - name: Verify build artifacts
+        run: |
+          ls -lh main.js manifest.json styles.css
+          test -f main.js || (echo "main.js not found!" && exit 1)
+          test -f manifest.json || (echo "manifest.json not found!" && exit 1)
+          test -f styles.css || (echo "styles.css not found!" && exit 1)
 
       - name: Determine Tag / Release Name
         id: tag_info
