@@ -937,8 +937,8 @@ export class AINotebookDetailView extends ItemView {
                     text: AGENT_MODE_LABELS[m]
                 });
                 btn.setAttribute('title', m === 'consult'
-                    ? '読み取りのみ。計画や構成案を返します (--permission-mode plan)'
-                    : '成果物を artifacts/ に作成・編集します (--permission-mode bypassPermissions)');
+                    ? '読み取りのみ。計画や構成案を返します (書き込み系ツールを無効化)'
+                    : '成果物を artifacts/ に作成・編集します');
                 btn.onclick = () => {
                     if (this.currentMode === m) return;
                     this.currentMode = m;

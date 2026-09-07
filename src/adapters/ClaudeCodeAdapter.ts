@@ -15,11 +15,19 @@ import { StreamJsonAccumulator } from './StreamJsonParser';
 import { AgentMode } from '../types';
 import * as path from 'path';
 
-/** 実行モード -> Claude Code の --permission-mode */
-const PERMISSION_MODE: Record<AgentMode, string> = {
-    consult: 'plan',              // 読み取りのみ。CLI 本来の計画モード
-    build: 'bypassPermissions'    // 成果物を作成・編集する
-};
+/**
+ * 相談モードで無効化するツール。
+ *
+ * 読み取り専用を --permission-mode plan で表現してはいけない。
+ * plan モードは ExitPlanMode の承認を人間に求める対話前提のモードであり、
+ * -p (非対話) では応答できずに停止する（実測: 権限確認と "Exit plan mode?" が
+ * 繰り返し記録され、成果物も計画も得られない）。
+ *
+ * 代わりに「書けるツールを渡さない」ことで読み取り専用を表現する。
+ * 権限モードは常に bypassPermissions にして、承認プロンプトが発生しうる経路を潰す。
+ * Bash も除外する（シェル経由でファイルを書けてしまうため）。
+ */
+const CONSULT_DISALLOWED_TOOLS = 'Write,Edit,MultiEdit,NotebookEdit,Bash';
 
 /**
  * CLI 引数の構築。
@@ -37,11 +45,18 @@ export function buildClaudeArgs(params: {
     const { mode, supports, additionalReadDirs, agentSessionId, resumeSession } = params;
     const args: string[] = [];
 
+    // 権限モードは常にバイパスする。-p には承認プロンプトに応答する手段がなく、
+    // プロンプトが出た時点で「許可待ち」のまま何も起きずに終わるため。
     if (supports('--permission-mode')) {
-        args.push('--permission-mode', PERMISSION_MODE[mode]);
+        args.push('--permission-mode', 'bypassPermissions');
     } else {
-        // 旧版フォールバック。plan 相当が無いので相談モードでも書けてしまう点は許容する。
         args.push('--dangerously-skip-permissions');
+    }
+
+    // 相談モードの読み取り専用性は、権限ではなくツールの有無で担保する。
+    // --disallowedTools 未対応の旧版では相談モードでも書けてしまう点は許容する。
+    if (mode === 'consult' && supports('--disallowedTools')) {
+        args.push('--disallowedTools', CONSULT_DISALLOWED_TOOLS);
     }
 
     // stream-json は --verbose とセットでないと print モードで拒否される

@@ -9,8 +9,8 @@ import { LinkedContext } from '../src/types';
 
 /** 実機の `claude --help` から採取した、対応フラグの集合 */
 const MODERN_FLAGS = new Set([
-    '--permission-mode', '--output-format', '--verbose', '--add-dir',
-    '--resume', '--session-id', '--append-system-prompt', '--model'
+    '--permission-mode', '--disallowedTools', '--output-format', '--verbose',
+    '--add-dir', '--resume', '--session-id', '--append-system-prompt', '--model'
 ]);
 const modern = (f: string) => MODERN_FLAGS.has(f);
 const ancient = (_f: string) => false;
@@ -59,12 +59,21 @@ async function runTests() {
     console.log('=== エージェント実行 単体テスト開始 ===');
 
     // ---------------------------------------------------------------
-    console.log('Test 1: 実行モードが --permission-mode にマップされること');
+    console.log('Test 1: 相談モードは「書けるツールを渡さない」ことで読み取り専用にすること');
     const consult = buildClaudeArgs({ mode: 'consult', supports: modern, additionalReadDirs: [] });
-    assert.strictEqual(pairAfter(consult.args, '--permission-mode'), 'plan', '相談モードは plan');
-
     const build = buildClaudeArgs({ mode: 'build', supports: modern, additionalReadDirs: [] });
-    assert.strictEqual(pairAfter(build.args, '--permission-mode'), 'bypassPermissions', '作成モードは bypassPermissions');
+
+    // plan モードは ExitPlanMode の承認を人間に求めるため -p では停止する。使ってはいけない。
+    assert.ok(!consult.args.includes('plan'), '相談モードで --permission-mode plan を使わないこと');
+    assert.strictEqual(pairAfter(consult.args, '--permission-mode'), 'bypassPermissions',
+        '承認プロンプトが発生しないよう常にバイパスすること');
+    assert.strictEqual(pairAfter(build.args, '--permission-mode'), 'bypassPermissions');
+
+    const disallowed = pairAfter(consult.args, '--disallowedTools') || '';
+    for (const tool of ['Write', 'Edit', 'NotebookEdit', 'Bash']) {
+        assert.ok(disallowed.includes(tool), `相談モードで ${tool} を無効化すること`);
+    }
+    assert.ok(!build.args.includes('--disallowedTools'), '作成モードではツールを制限しないこと');
 
     // 振る舞いの指示をプロンプトで注入しないので、システムプロンプト系フラグは使わない
     assert.ok(!build.args.includes('--append-system-prompt'), 'システムプロンプトを注入しないこと');
@@ -88,6 +97,7 @@ async function runTests() {
     });
     assert.ok(!legacy.args.includes('--permission-mode'), '未対応なら --permission-mode を渡さない');
     assert.ok(legacy.args.includes('--dangerously-skip-permissions'), '旧フラグへフォールバックすること');
+    assert.ok(!legacy.args.includes('--disallowedTools'), '未対応なら --disallowedTools を渡さない');
     assert.strictEqual(legacy.streamJson, false, 'stream-json を無効化すること');
     assert.ok(!legacy.args.includes('--add-dir'), '未対応なら --add-dir を渡さない');
     assert.ok(!legacy.args.includes('--resume'), '未対応なら --resume を渡さない');
