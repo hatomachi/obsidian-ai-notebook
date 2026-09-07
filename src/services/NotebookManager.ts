@@ -1,7 +1,8 @@
 import { App, TFile, TFolder, parseYaml, stringifyYaml, normalizePath, FileSystemAdapter } from 'obsidian';
-import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AINotebookSettings, SystemKnowledge, DocumentTemplate, SourceOrigin, TranscriptionErrorEntry, MattermostChannelRef } from '../types';
+import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AINotebookSettings, SystemKnowledge, DocumentTemplate, SourceOrigin, TranscriptionErrorEntry, MattermostChannelRef, AddSourceResult } from '../types';
 import { TranscriptionService } from './transcription/TranscriptionService';
 import { BoundFolderReader } from './BoundFolderReader';
+import { DebugFolderHelper } from '../utils/debugFolderHelper';
 import * as path from 'path';
 
 export class NotebookManager {
@@ -695,7 +696,7 @@ export class NotebookManager {
         fileName: string,
         data: ArrayBuffer | Buffer | string,
         origin?: SourceOrigin
-    ): Promise<TFile> {
+    ): Promise<AddSourceResult> {
         const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources`);
         await this.ensureFolder(sourcesDir);
 
@@ -726,15 +727,27 @@ export class NotebookManager {
 
         const buffer = toBuffer(data);
         if (buffer.length === 0) {
+            DebugFolderHelper.logPipelineError(fileName, 2, 'Read', new Error('データが空（0バイト）です'));
             throw new Error(`ファイル "${fileName}" のデータが空（0バイト）です。ファイルが正しく保存・同期されているか確認してください。`);
         }
 
+        DebugFolderHelper.logPipelineStep(fileName, 2, 'Read', `バッファ取得完了 (${buffer.length.toLocaleString()} bytes)`);
+
         // バイナリドキュメント（Excel/PPTX/Word）の場合は自動で Markdown に決定的変換
         if (TranscriptionService.isTranscribable(fileName)) {
+            DebugFolderHelper.logPipelineStep(fileName, 3, 'Route', `Officeドキュメントと判定 -> 自動パースを実行します`);
             try {
-                const { markdown, convertedFilename } = await TranscriptionService.transcribe(
+                const { markdown, convertedFilename, metrics } = await TranscriptionService.transcribe(
                     buffer,
                     fileName
+                );
+
+                DebugFolderHelper.logPipelineStep(
+                    fileName, 
+                    4, 
+                    'Parse', 
+                    `パース完了 (所要時間: ${metrics?.durationMs}ms, ${metrics?.lineCount}行, ${metrics?.charCount}文字)`,
+                    metrics
                 );
 
                 await this.clearTranscriptionError(id, fileName);
@@ -771,15 +784,60 @@ export class NotebookManager {
                     }
                 }
 
-                return resultFile;
+                DebugFolderHelper.logPipelineStep(
+                    fileName, 
+                    5, 
+                    'Save', 
+                    `Markdown保存完了: ${convertedFilename} (原本は .cache/${fileName} にバックアップ)`
+                );
+
+                return {
+                    file: resultFile,
+                    isConverted: true,
+                    convertedFilename,
+                    metrics
+                };
             } catch (transcribeError: any) {
-                console.warn(`Failed to auto-transcribe ${fileName}, recording error and falling back to raw save:`, transcribeError);
+                DebugFolderHelper.logPipelineError(fileName, 4, 'Parse', transcribeError, { bufferLength: buffer.length });
+                console.error(`[AI Notebook] ❌ 自動パース失敗: ${fileName} - 原本バイナリを通常保存へフォールバックします:`, transcribeError);
                 await this.recordTranscriptionError(id, fileName, transcribeError, buffer.length);
+
+                // フォールバック: 原本を sources 直下に直接保存
+                const fallbackPath = normalizePath(`${sourcesDir}/${fileName}`);
+                const existing = this.app.vault.getAbstractFileByPath(fallbackPath);
+                let fallbackFile: TFile;
+
+                if (existing instanceof TFile) {
+                    if (typeof data === 'string') {
+                        await this.app.vault.modify(existing, data);
+                    } else {
+                        await this.app.vault.modifyBinary(existing, toArrayBuffer(data));
+                    }
+                    fallbackFile = existing;
+                } else {
+                    if (typeof data === 'string') {
+                        fallbackFile = await this.app.vault.create(fallbackPath, data);
+                    } else {
+                        fallbackFile = await this.app.vault.createBinary(fallbackPath, toArrayBuffer(data));
+                    }
+                }
+
+                DebugFolderHelper.logPipelineStep(fileName, 5, 'Save (Fallback)', `原本バイナリを直接保存しました: ${fileName}`);
+
+                return {
+                    file: fallbackFile,
+                    isConverted: false,
+                    transcriptionFailed: true,
+                    error: transcribeError?.message || String(transcribeError)
+                };
             }
         }
 
+        // 非Office文書（通常テキスト・PDF・画像など）
+        DebugFolderHelper.logPipelineStep(fileName, 3, 'Route', `非Office文書のため直接保存します`);
         const filePath = normalizePath(`${sourcesDir}/${fileName}`);
         const existing = this.app.vault.getAbstractFileByPath(filePath);
+        let directFile: TFile;
 
         if (existing instanceof TFile) {
             if (typeof data === 'string') {
@@ -787,20 +845,29 @@ export class NotebookManager {
             } else {
                 await this.app.vault.modifyBinary(existing, toArrayBuffer(data));
             }
-            return existing;
+            directFile = existing;
         } else {
             if (typeof data === 'string') {
-                return await this.app.vault.create(filePath, data);
+                directFile = await this.app.vault.create(filePath, data);
             } else {
-                return await this.app.vault.createBinary(filePath, toArrayBuffer(data));
+                directFile = await this.app.vault.createBinary(filePath, toArrayBuffer(data));
             }
         }
+
+        DebugFolderHelper.logPipelineStep(fileName, 5, 'Save', `直接保存完了: ${fileName}`);
+
+        return {
+            file: directFile,
+            isConverted: false,
+            transcriptionFailed: false
+        };
     }
 
     /**
      * 未変換バイナリまたは変換失敗ファイルの再変換を実行
      */
     async retranscribeSource(id: string, fileName: string): Promise<{ success: boolean; error?: string }> {
+        DebugFolderHelper.logPipelineStep(fileName, 1, 'Retry', `再変換を開始します`);
         const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources`);
         const rawInSources = normalizePath(`${sourcesDir}/${fileName}`);
         const rawInCache = normalizePath(`${sourcesDir}/.cache/${fileName}`);
@@ -811,7 +878,9 @@ export class NotebookManager {
         }
 
         if (!(rawFile instanceof TFile)) {
-            return { success: false, error: `原本ファイルが見つかりません: ${fileName}` };
+            const msg = `原本ファイルが見つかりません: ${fileName}`;
+            DebugFolderHelper.logPipelineError(fileName, 1, 'Retry', new Error(msg));
+            return { success: false, error: msg };
         }
 
         try {
@@ -821,7 +890,8 @@ export class NotebookManager {
                 throw new Error(`ファイルデータが空（0バイト）です。`);
             }
 
-            const { markdown, convertedFilename } = await TranscriptionService.transcribe(buffer, fileName);
+            const { markdown, convertedFilename, metrics } = await TranscriptionService.transcribe(buffer, fileName);
+            DebugFolderHelper.logPipelineStep(fileName, 2, 'Retry-Parse', `再パース成功 (${metrics?.durationMs}ms, ${metrics?.lineCount}行)`, metrics);
 
             // 変換後 Markdown を sources 直下に作成
             const mdPath = normalizePath(`${sourcesDir}/${convertedFilename}`);
@@ -848,8 +918,10 @@ export class NotebookManager {
             }
 
             await this.clearTranscriptionError(id, fileName);
+            DebugFolderHelper.logPipelineStep(fileName, 3, 'Retry-Save', `再変換後Markdownの保存完了: ${convertedFilename}`);
             return { success: true };
         } catch (err: any) {
+            DebugFolderHelper.logPipelineError(fileName, 2, 'Retry-Parse', err);
             console.error(`Retranscription failed for ${fileName}:`, err);
             const fileSize = (rawFile instanceof TFile) ? rawFile.stat.size : 0;
             await this.recordTranscriptionError(id, fileName, err, fileSize);

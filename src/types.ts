@@ -106,6 +106,15 @@ export interface NotebookSource {
     transcriptionError?: TranscriptionErrorEntry; // 変換失敗時のエラー詳細
 }
 
+export interface AddSourceResult {
+    file: any; // TFile
+    isConverted: boolean;
+    convertedFilename?: string;
+    transcriptionFailed?: boolean;
+    error?: string;
+    metrics?: { durationMs: number; lineCount: number; charCount: number };
+}
+
 export interface NotebookArtifact {
     id: string;
     title: string;
@@ -211,6 +220,7 @@ export interface AINotebookSettings {
     mattermostUrl?: string;        // Mattermost サーバーURL (例: https://mattermost.internal.company.com)
     mattermostToken?: string;      // Personal Access Token (PAT)
     mattermostPresets?: MattermostPreset[]; // お気に入りチャンネルセット
+    enableDebugActions?: boolean;  // 🛠️ デバッグ動線・切り分けログの有効化（将来着脱容易）
 }
 
 export const DEFAULT_SETTINGS: AINotebookSettings = {
@@ -223,7 +233,8 @@ export const DEFAULT_SETTINGS: AINotebookSettings = {
     sharedFolderBasePath: '',
     mattermostUrl: '',
     mattermostToken: '',
-    mattermostPresets: []
+    mattermostPresets: [],
+    enableDebugActions: true
 };
 
 

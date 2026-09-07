@@ -1873,5 +1873,162 @@
     background: rgba(198, 40, 40, 0.1);
 }
 
+/* ============================================================
+   🛠️ デバッグ動線 & 実フォルダ連携スタイル (将来着脱容易)
+   ============================================================ */
+.ai-notebook-source-header-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ai-notebook-debug-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+}
+
+.ai-notebook-btn-debug {
+    font-size: 0.72rem !important;
+    padding: 3px 7px !important;
+    border-radius: 4px !important;
+    background: var(--background-secondary) !important;
+    border: 1px dashed var(--background-modifier-border-hover) !important;
+    color: var(--text-muted) !important;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+}
+
+.ai-notebook-btn-debug:hover {
+    color: var(--interactive-accent) !important;
+    border-color: var(--interactive-accent) !important;
+    background: var(--background-modifier-hover) !important;
+}
+
+.ai-notebook-source-item.is-clickable {
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.ai-notebook-source-item.is-clickable:hover {
+    background-color: var(--background-modifier-hover);
+    border-color: var(--interactive-accent);
+}
+
+.ai-notebook-debug-item-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    opacity: 0.7;
+    transition: opacity 0.15s ease;
+}
+
+.ai-notebook-source-item:hover .ai-notebook-debug-item-actions {
+    opacity: 1;
+}
+
+.ai-notebook-item-debug-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+    width: 22px;
+    height: 22px;
+    transition: all 0.15s ease;
+}
+
+.ai-notebook-item-debug-btn:hover {
+    color: var(--interactive-accent);
+    background-color: var(--background-modifier-hover);
+    border-color: var(--background-modifier-border);
+}
+
+/* 🛠️ デバッグ診断モーダル */
+.ai-notebook-debug-modal {
+    max-width: 600px;
+}
+
+.ai-notebook-debug-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+    font-size: 0.82rem;
+}
+
+.ai-notebook-debug-table th,
+.ai-notebook-debug-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--background-modifier-border);
+    vertical-align: top;
+    text-align: left;
+}
+
+.ai-notebook-debug-table th {
+    width: 32%;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+.ai-notebook-debug-table code {
+    font-size: 0.76rem;
+    padding: 2px 4px;
+    border-radius: 3px;
+    background: var(--background-secondary);
+    word-break: break-all;
+}
+
+.ai-notebook-debug-copy-btn {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 2px 4px;
+    margin-left: 6px;
+    font-size: 0.8rem;
+    vertical-align: middle;
+}
+
+.ai-notebook-debug-copy-btn:hover {
+    transform: scale(1.15);
+}
+
+.ai-notebook-debug-error-box {
+    margin-top: 16px;
+    padding: 12px;
+    background: rgba(255, 77, 79, 0.08);
+    border: 1px solid var(--text-error);
+    border-radius: 6px;
+}
+
+.ai-notebook-debug-error-box h3 {
+    margin-top: 0;
+    font-size: 0.9rem;
+    color: var(--text-error);
+}
+
+.ai-notebook-debug-error-box pre {
+    margin: 0;
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.ai-notebook-debug-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 20px;
+}
+
+
 
 

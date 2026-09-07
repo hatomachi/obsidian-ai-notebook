@@ -9,6 +9,7 @@ import { TextInputModal } from './modals/TextInputModal';
 import { MattermostModal } from './modals/MattermostModal';
 import { BoundFolderReader } from '../services/BoundFolderReader';
 import { AgentFactory } from '../adapters/AgentFactory';
+import { DebugFolderHelper } from '../utils/debugFolderHelper';
 import * as path from 'path';
 
 export const VIEW_TYPE_DETAIL = 'ai-notebook-detail';
@@ -430,8 +431,19 @@ export class AINotebookDetailView extends ItemView {
         // ==========================================
         const sourceSection = panel.createDiv({ cls: 'ai-notebook-source-section' });
         const sourceHeader = sourceSection.createDiv({ cls: 'ai-notebook-panel-header' });
-        sourceHeader.createEl('h3', { text: '📂 直接投入ファイル' });
-        sourceHeader.createSpan({ text: `${this.sources.length}`, cls: 'ai-notebook-count-badge' });
+        
+        const titleWrap = sourceHeader.createDiv({ cls: 'ai-notebook-source-header-title' });
+        titleWrap.createEl('h3', { text: '📂 直接投入ファイル' });
+        titleWrap.createSpan({ text: `${this.sources.length}`, cls: 'ai-notebook-count-badge' });
+
+        // 🛠️ デバッグ動線: sources 実フォルダ (Finder) & 左ペイン表示ボタン (着脱容易)
+        if ((this.plugin.settings.enableDebugActions ?? true) && this.notebookId) {
+            const sourcesPath = `${this.plugin.settings.rootDir}/notebooks/${this.notebookId}/sources`;
+            DebugFolderHelper.renderHeaderDebugActions(sourceHeader, {
+                app: this.app,
+                sourcesPath
+            });
+        }
 
         // D&D ドロップゾーン
         const dropZone = sourceSection.createDiv({ cls: 'ai-notebook-dropzone' });
@@ -452,14 +464,15 @@ export class AINotebookDetailView extends ItemView {
             }
         };
 
-        dropZone.ondragover = (e) => {
+        // ドロップゾーンおよびセクション全体での D&D 受け付け
+        const handleDragOver = (e: DragEvent) => {
             e.preventDefault();
             dropZone.addClass('is-dragover');
         };
-        dropZone.ondragleave = () => {
+        const handleDragLeave = (e: DragEvent) => {
             dropZone.removeClass('is-dragover');
         };
-        dropZone.ondrop = async (e) => {
+        const handleDrop = async (e: DragEvent) => {
             e.preventDefault();
             dropZone.removeClass('is-dragover');
             if (e.dataTransfer && e.dataTransfer.files.length > 0) {
@@ -467,14 +480,27 @@ export class AINotebookDetailView extends ItemView {
             }
         };
 
+        dropZone.ondragover = handleDragOver;
+        dropZone.ondragleave = handleDragLeave;
+        dropZone.ondrop = handleDrop;
+
+        sourceSection.ondragover = handleDragOver;
+        sourceSection.ondrop = handleDrop;
+
         // ソース一覧リスト
         const sourceList = sourceSection.createDiv({ cls: 'ai-notebook-source-list' });
         if (this.sources.length === 0) {
             sourceList.createDiv({ text: '直接投入ファイルはありません', cls: 'ai-notebook-empty-text' });
         } else {
             for (const src of this.sources) {
-                const item = sourceList.createDiv({ cls: 'ai-notebook-source-item' });
+                const item = sourceList.createDiv({ cls: 'ai-notebook-source-item is-clickable' });
                 
+                // アイテムクリックで直接 Obsidian エディタで開く
+                item.onclick = async () => {
+                    await DebugFolderHelper.openInEditor(this.app, src.path);
+                };
+                item.setAttribute('title', `クリックでObsidianエディタで開く: ${src.path}`);
+
                 const effectiveExt = src.convertedFrom
                     ? src.convertedFrom.split('.').pop() || src.extension
                     : src.extension;
@@ -495,7 +521,7 @@ export class AINotebookDetailView extends ItemView {
                 if (src.convertedFrom) {
                     const badge = nameWrap.createSpan({ cls: 'ai-notebook-badge-converted' });
                     const origExt = (src.convertedFrom.split('.').pop() || '').toLowerCase();
-                    if (origExt === 'xlsx' || origExt === 'xls') {
+                    if (origExt === 'xlsx' || origExt === 'xls' || origExt === 'xlsm') {
                         badge.setText('📊 Excel変換');
                     } else if (origExt === 'pptx' || origExt === 'ppt') {
                         badge.setText('📑 PPTX変換');
@@ -518,8 +544,18 @@ export class AINotebookDetailView extends ItemView {
                     };
                 }
 
+                // 🛠️ デバッグ動線: 各ファイル用のFinder/左ペイン/詳細情報ボタン (着脱容易)
+                if ((this.plugin.settings.enableDebugActions ?? true) && this.notebookId) {
+                    DebugFolderHelper.renderItemDebugActions(item, {
+                        app: this.app,
+                        source: src,
+                        notebookId: this.notebookId,
+                        rootDir: this.plugin.settings.rootDir
+                    });
+                }
+
                 // 未変換のバイナリまたはエラー発生ソースに対する再変換（リラン）ボタン
-                const isTranscribableRaw = ['xlsx', 'xls', 'docx', 'pptx'].includes(src.extension.toLowerCase()) && !src.convertedFrom;
+                const isTranscribableRaw = ['xlsx', 'xls', 'xlsm', 'docx', 'pptx'].includes(src.extension.toLowerCase()) && !src.convertedFrom;
                 if (isTranscribableRaw || src.transcriptionError) {
                     const retryBtn = item.createEl('button', { cls: 'ai-notebook-item-retry-btn' });
                     setIcon(retryBtn, 'refresh-cw');
@@ -553,23 +589,37 @@ export class AINotebookDetailView extends ItemView {
     }
 
     /**
-     * ファイル投入の処理ハンドラー（レース状態対策・0バイトガード・Electronフォールバック）
+     * ファイル投入の処理ハンドラー（パイプライン切り分けログ・レース状態対策・0バイトガード・結果可視化）
      */
     private async handleFilesAdded(files: FileList): Promise<void> {
         if (!this.notebookId) return;
 
         let addedCount = 0;
+        let convertedCount = 0;
+        let failedCount = 0;
+
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
+            const localPath = (file as any).path;
+
+            // Step 1: D&Dイベント検知ログ
+            DebugFolderHelper.logPipelineStep(
+                file.name,
+                1,
+                'Event',
+                `ファイル検知: ${file.name} (サイズ: ${file.size.toLocaleString()} bytes, MIME: ${file.type || 'none'})`,
+                { name: file.name, size: file.size, type: file.type, localPath }
+            );
+
             let buffer: ArrayBuffer | Buffer | null = null;
             
-            // Electron 環境での確実なローカルファイル読み込み
-            const localPath = (file as any).path;
+            // Step 2: Electron 環境でのローカルファイル読み込み
             if (localPath && typeof require !== 'undefined') {
                 try {
                     const fs = require('fs');
                     if (fs.existsSync(localPath)) {
                         buffer = fs.readFileSync(localPath);
+                        DebugFolderHelper.logPipelineStep(file.name, 2, 'Read', `Electron fs 経由でバッファ取得 (${buffer?.byteLength} bytes)`);
                     }
                 } catch (e) {
                     console.warn(`Failed to read file via fs: ${localPath}`, e);
@@ -577,7 +627,11 @@ export class AINotebookDetailView extends ItemView {
             }
 
             if (!buffer || (buffer as any).byteLength === 0) {
-                buffer = await file.arrayBuffer();
+                try {
+                    buffer = await file.arrayBuffer();
+                } catch (readErr) {
+                    DebugFolderHelper.logPipelineError(file.name, 2, 'Read', readErr);
+                }
             }
 
             // 0バイト判定 & レース状態リトライ (150ms待機 × 最大2回)
@@ -594,27 +648,50 @@ export class AINotebookDetailView extends ItemView {
                     } catch {}
                 }
                 if (!buffer || (buffer as any).byteLength === 0) {
-                    buffer = await file.arrayBuffer();
+                    try {
+                        buffer = await file.arrayBuffer();
+                    } catch {}
                 }
             }
 
             if (!buffer || buffer.byteLength === 0) {
+                const emptyErr = new Error(`ファイル "${file.name}" のデータが空（0バイト）です。`);
+                DebugFolderHelper.logPipelineError(file.name, 2, 'Read', emptyErr, { localPath, fileSize: file.size });
                 new Notice(`⚠️ "${file.name}" のデータが空（0バイト）です。ファイルの保存中または未同期の可能性があります。スキップしました。`, 6000);
                 continue;
             }
 
             try {
-                await this.plugin.notebookManager.addSourceFile(this.notebookId, file.name, buffer);
-                addedCount++;
+                const result = await this.plugin.notebookManager.addSourceFile(this.notebookId, file.name, buffer);
+                if (result.transcriptionFailed) {
+                    failedCount++;
+                    new Notice(`⚠️ "${file.name}" のテキスト変換に失敗しました: ${result.error}\n（原本バイナリを直接保存しました）`, 8000);
+                } else if (result.isConverted) {
+                    convertedCount++;
+                    new Notice(`✅ "${file.name}" を Markdown に変換しました (${result.metrics?.lineCount || 0}行)`, 4000);
+                } else {
+                    addedCount++;
+                }
             } catch (err: any) {
+                DebugFolderHelper.logPipelineError(file.name, 5, 'Save', err);
                 console.error(`Failed to add source file ${file.name}:`, err);
                 new Notice(`❌ "${file.name}" の追加に失敗しました: ${err?.message || err}`, 6000);
             }
         }
 
-        if (addedCount > 0) {
-            new Notice(`${addedCount} 件のファイルをソースに追加しました`);
+        const totalSuccessful = addedCount + convertedCount;
+        if (totalSuccessful > 0 || failedCount > 0) {
+            const summaryParts: string[] = [];
+            if (convertedCount > 0) summaryParts.push(`${convertedCount}件をテキスト変換`);
+            if (addedCount > 0) summaryParts.push(`${addedCount}件を追加`);
+            if (failedCount > 0) summaryParts.push(`⚠️ ${failedCount}件の変換失敗(原本保存)`);
+
+            const debugHint = (this.plugin.settings.enableDebugActions ?? true)
+                ? `\n💡 ヘッダーの「📂 実フォルダ」からFinderで即座に確認できます`
+                : '';
+            new Notice(`📥 ${summaryParts.join('、')}${debugHint}`, 6000);
         }
+
         await this.refresh();
     }
 

@@ -190,6 +190,21 @@ export class AINotebookSettingTab extends PluginSettingTab {
                     }));
             }
         }
+
+        // ============================================================
+        // 🛠️ デバッグ機能設定 (将来不要時に容易に撤去可能)
+        // ============================================================
+        containerEl.createEl('h3', { text: '🛠️ デバッグ機能' });
+
+        new Setting(containerEl)
+            .setName('デバッグ動線・切り分けログを表示')
+            .setDesc('ソースパネルの Finder / 左ペイン展開ボタン、各ファイルのデバッグ詳細確認、および D&D 時の DevTools 詳細パイプラインログを有効化します')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.enableDebugActions ?? true)
+                .onChange(async (value) => {
+                    this.plugin.settings.enableDebugActions = value;
+                    await this.plugin.saveSettings();
+                }));
     }
 }
 
