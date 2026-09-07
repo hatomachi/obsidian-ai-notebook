@@ -6,7 +6,7 @@ import * as os from 'os';
 
 export const execAsync = promisify(exec);
 
-import { LinkedContext, ChatMessage, MattermostChannelRef } from '../types';
+import { LinkedContext, ChatMessage, MattermostChannelRef, AgentDebugInfo } from '../types';
 
 export interface AgentOptions {
     notebookDir: string;  // 当該ノートブックのルート絶対パス (<rootDir>/notebooks/<id>)。CLI の cwd
@@ -34,6 +34,7 @@ export interface AgentResult {
     text: string;
     artifactsCreated?: string[];
     artifactsModified?: string[];
+    debugInfo?: AgentDebugInfo;
 }
 
 export interface AIAgentAdapter {
@@ -211,10 +212,17 @@ export function detectArtifactsDiff(beforeSnapshot: Map<string, number>, artifac
     return { created, modified };
 }
 
+export interface SpawnDetailedResult {
+    stdout: string;
+    stderr: string;
+    exitCode: number | null;
+    durationMs: number;
+}
+
 /**
- * spawn を用いたエージェントプロセスのストリーミング実行（キャンセル対応）
+ * spawn を用いたエージェントプロセスのストリーミング実行（詳細メトリクス取得・キャンセル対応）
  */
-export function runSpawnAgent(
+export function runSpawnAgentDetailed(
     command: string,
     args: string[],
     options: {
@@ -223,7 +231,7 @@ export function runSpawnAgent(
         onStdoutChunk?: (chunk: string) => void;
         abortSignal?: AbortSignal;
     }
-): Promise<string> {
+): Promise<SpawnDetailedResult> {
     return new Promise((resolve, reject) => {
         validateNotebookWorkingDir(options.cwd);
 
@@ -231,6 +239,7 @@ export function runSpawnAgent(
             return reject(new Error('実行がキャンセルされました'));
         }
 
+        const startTime = Date.now();
         console.log(`[runSpawnAgent] Spawning: ${command} in cwd: ${options.cwd}`);
         const child: ChildProcess = spawn(command, args, {
             cwd: options.cwd,
@@ -282,14 +291,37 @@ export function runSpawnAgent(
         });
 
         child.on('close', (code) => {
-            console.log(`[runSpawnAgent] Process closed with exit code: ${code}`);
+            const durationMs = Date.now() - startTime;
+            console.log(`[runSpawnAgent] Process closed with exit code: ${code} (took ${durationMs}ms)`);
             if (code === 0 || stdoutBuffer.trim().length > 0) {
-                resolve(stdoutBuffer.trim());
+                resolve({
+                    stdout: stdoutBuffer.trim(),
+                    stderr: stderrBuffer.trim(),
+                    exitCode: code,
+                    durationMs
+                });
             } else {
                 reject(new Error(`CLI プロセスがエラー終了しました (終了コード: ${code}): ${stderrBuffer || '出力なし'}`));
             }
         });
     });
+}
+
+/**
+ * spawn を用いたエージェントプロセスのストリーミング実行（後方互換用）
+ */
+export async function runSpawnAgent(
+    command: string,
+    args: string[],
+    options: {
+        cwd: string;
+        env: NodeJS.ProcessEnv;
+        onStdoutChunk?: (chunk: string) => void;
+        abortSignal?: AbortSignal;
+    }
+): Promise<string> {
+    const result = await runSpawnAgentDetailed(command, args, options);
+    return result.stdout;
 }
 
 /**

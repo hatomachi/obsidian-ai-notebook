@@ -2029,6 +2029,90 @@
     margin-top: 20px;
 }
 
+/* Chat Debug Details Accordion */
+.ai-notebook-chat-debug-details {
+    margin-top: 10px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    background-color: var(--background-primary);
+    font-size: 0.8rem;
+    overflow: hidden;
+}
+
+.ai-notebook-chat-debug-summary {
+    cursor: pointer;
+    padding: 6px 10px;
+    background-color: var(--background-secondary-alt);
+    color: var(--text-muted);
+    font-weight: 500;
+    font-size: 0.78rem;
+    user-select: none;
+    transition: background-color 0.15s ease;
+}
+
+.ai-notebook-chat-debug-summary:hover {
+    color: var(--text-normal);
+    background-color: var(--background-modifier-hover);
+}
+
+.ai-notebook-chat-debug-content {
+    padding: 10px 12px;
+    border-top: 1px solid var(--background-modifier-border);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.ai-notebook-debug-row {
+    font-size: 0.78rem;
+    line-height: 1.4;
+    word-break: break-all;
+}
+
+.ai-notebook-debug-row code {
+    font-size: 0.75rem;
+    background-color: var(--background-secondary);
+    padding: 2px 4px;
+    border-radius: 4px;
+}
+
+.ai-notebook-debug-section {
+    margin-top: 6px;
+}
+
+.ai-notebook-debug-section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+}
+
+.ai-notebook-debug-code {
+    margin: 4px 0 0 0;
+    padding: 8px;
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    max-height: 250px;
+    overflow-y: auto;
+    font-size: 0.72rem;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-all;
+    user-select: text !important;
+    -webkit-user-select: text !important;
+}
+
+.ai-notebook-debug-stderr {
+    color: var(--text-error);
+}
+
+.ai-notebook-debug-stderr .ai-notebook-debug-code {
+    border-color: var(--text-error);
+    background-color: rgba(255, 77, 79, 0.05);
+}
+
+
 
 
 

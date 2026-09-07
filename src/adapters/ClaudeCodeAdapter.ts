@@ -1,4 +1,4 @@
-import { AIAgentAdapter, AgentOptions, AgentResult, getExtendedEnv, resolveCommandPath, snapshotArtifacts, detectArtifactsDiff, runSpawnAgent, buildDirectEditSystemPrompt } from './AgentAdapter';
+import { AIAgentAdapter, AgentOptions, AgentResult, getExtendedEnv, resolveCommandPath, snapshotArtifacts, detectArtifactsDiff, runSpawnAgentDetailed, buildDirectEditSystemPrompt } from './AgentAdapter';
 import * as path from 'path';
 
 export class ClaudeCodeAdapter implements AIAgentAdapter {
@@ -28,7 +28,7 @@ export class ClaudeCodeAdapter implements AIAgentAdapter {
         ];
 
         try {
-            const stdout = await runSpawnAgent(exePath, args, {
+            const spawnResult = await runSpawnAgentDetailed(exePath, args, {
                 cwd: notebookDir,
                 env,
                 onStdoutChunk: options.onStdoutChunk,
@@ -40,9 +40,21 @@ export class ClaudeCodeAdapter implements AIAgentAdapter {
             console.log(`[ClaudeCodeAdapter] Artifacts diff - Created: ${created.join(', ') || 'none'}, Modified: ${modified.join(', ') || 'none'}`);
 
             return {
-                text: stdout,
+                text: spawnResult.stdout,
                 artifactsCreated: created,
-                artifactsModified: modified
+                artifactsModified: modified,
+                debugInfo: {
+                    agentId: this.id,
+                    command,
+                    exePath,
+                    args,
+                    cwd: notebookDir,
+                    prompt,
+                    stdout: spawnResult.stdout,
+                    stderr: spawnResult.stderr,
+                    exitCode: spawnResult.exitCode,
+                    durationMs: spawnResult.durationMs
+                }
             };
         } catch (err: any) {
             console.error('[ClaudeCodeAdapter] CLI execution error:', err);

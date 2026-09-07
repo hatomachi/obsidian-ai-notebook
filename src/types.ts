@@ -124,6 +124,20 @@ export interface NotebookArtifact {
     updatedAt: string;
 }
 
+export interface AgentDebugInfo {
+    agentId: string;
+    command: string;
+    exePath: string;
+    args: string[];
+    cwd: string;
+    prompt: string;
+    stdout: string;
+    stderr: string;
+    exitCode: number | null;
+    durationMs: number;
+    error?: string;
+}
+
 export interface ChatMessage {
     id: string;
     sender: 'user' | 'agent' | 'system';
@@ -131,6 +145,7 @@ export interface ChatMessage {
     timestamp: string;
     artifactsGenerated?: string[]; // 生成・更新された成果物ファイル名一覧
     linkedNotebookIds?: string[];  // 実行時に参照していたノートブックID一覧
+    debugInfo?: AgentDebugInfo;    // 実行ログ・デバッグ情報
 }
 
 export type AIAgentType = 'antigravity' | 'claude';

@@ -1,6 +1,6 @@
 import { ItemView, WorkspaceLeaf, setIcon, TFile, Notice, FileSystemAdapter, MarkdownRenderer } from 'obsidian';
 import type AINotebookPlugin from '../main';
-import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession } from '../types';
+import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AgentDebugInfo } from '../types';
 import { ArtifactModal } from './modals/ArtifactModal';
 import { LinkNotebookModal } from './modals/LinkNotebookModal';
 import { BoundFolderExplorerModal } from './modals/BoundFolderExplorerModal';
@@ -11,6 +11,7 @@ import { BoundFolderReader } from '../services/BoundFolderReader';
 import { AgentFactory } from '../adapters/AgentFactory';
 import { DebugFolderHelper } from '../utils/debugFolderHelper';
 import * as path from 'path';
+import * as fs from 'fs';
 
 export const VIEW_TYPE_DETAIL = 'ai-notebook-detail';
 
@@ -1031,6 +1032,49 @@ export class AINotebookDetailView extends ItemView {
                     cls: 'ai-notebook-prov-text' 
                 });
             }
+
+            // デバッグ情報の折りたたみ表示
+            if (msg.debugInfo) {
+                const debugDetails = msgBubble.createEl('details', { cls: 'ai-notebook-chat-debug-details' });
+                const summary = debugDetails.createEl('summary', { cls: 'ai-notebook-chat-debug-summary' });
+                const durationSec = (msg.debugInfo.durationMs / 1000).toFixed(1);
+                summary.setText(`🛠️ CLI実行ログ (${msg.debugInfo.agentId}, ${durationSec}s, code: ${msg.debugInfo.exitCode ?? '?'})`);
+
+                const contentDiv = debugDetails.createDiv({ cls: 'ai-notebook-chat-debug-content' });
+
+                const infoDiv = contentDiv.createDiv({ cls: 'ai-notebook-debug-row' });
+                infoDiv.createEl('strong', { text: 'Command: ' });
+                infoDiv.createEl('code', { text: `${msg.debugInfo.exePath}` });
+
+                const argsDiv = contentDiv.createDiv({ cls: 'ai-notebook-debug-row' });
+                argsDiv.createEl('strong', { text: 'Args: ' });
+                argsDiv.createEl('code', { text: JSON.stringify(msg.debugInfo.args) });
+
+                const cwdDiv = contentDiv.createDiv({ cls: 'ai-notebook-debug-row' });
+                cwdDiv.createEl('strong', { text: 'CWD: ' });
+                cwdDiv.createEl('code', { text: msg.debugInfo.cwd });
+
+                // プロンプト全文 (コピーボタン付き)
+                const promptSection = contentDiv.createDiv({ cls: 'ai-notebook-debug-section' });
+                const promptHeader = promptSection.createDiv({ cls: 'ai-notebook-debug-section-header' });
+                promptHeader.createEl('strong', { text: `投入プロンプト (${msg.debugInfo.prompt.length} 文字)` });
+                const copyPromptBtn = promptHeader.createEl('button', { text: 'プロンプトをコピー', cls: 'ai-notebook-debug-copy-btn' });
+                copyPromptBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    await navigator.clipboard.writeText(msg.debugInfo!.prompt);
+                    new Notice('プロンプトをクリップボードにコピーしました');
+                };
+                const promptPre = promptSection.createEl('pre', { cls: 'ai-notebook-debug-code' });
+                promptPre.createEl('code', { text: msg.debugInfo.prompt });
+
+                // stderr (存在する場合)
+                if (msg.debugInfo.stderr) {
+                    const stderrSection = contentDiv.createDiv({ cls: 'ai-notebook-debug-section ai-notebook-debug-stderr' });
+                    stderrSection.createEl('strong', { text: '標準エラー出力 (stderr):' });
+                    const stderrPre = stderrSection.createEl('pre', { cls: 'ai-notebook-debug-code' });
+                    stderrPre.createEl('code', { text: msg.debugInfo.stderr });
+                }
+            }
         }
 
         messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -1240,8 +1284,13 @@ export class AINotebookDetailView extends ItemView {
                 artifactsGenerated: uniqueTouched.length > 0 ? uniqueTouched : undefined,
                 linkedNotebookIds: this.metadata?.linkedNotebookIds && this.metadata.linkedNotebookIds.length > 0
                     ? [...this.metadata.linkedNotebookIds]
-                    : undefined
+                    : undefined,
+                debugInfo: result.debugInfo
             };
+
+            if (result.debugInfo) {
+                this.saveAgentDebugLog(notebookDirAbs, result.debugInfo, result.artifactsCreated || [], result.artifactsModified || []);
+            }
 
             if (lastIdx !== -1) {
                 this.currentSession.messages[lastIdx] = finalAgentMsg;
@@ -1307,6 +1356,63 @@ export class AINotebookDetailView extends ItemView {
             case 'pptx': case 'ppt': return 'presentation';
             case 'md': case 'txt': return 'file-code';
             default: return 'file';
+        }
+    }
+
+    /**
+     * AI エージェント実行の詳細ログを各ノートブックの `_last_agent_debug.md` に保存
+     */
+    private saveAgentDebugLog(
+        notebookDir: string,
+        debug: AgentDebugInfo,
+        created: string[],
+        modified: string[]
+    ): void {
+        try {
+            const debugFilePath = path.join(notebookDir, '_last_agent_debug.md');
+            const durationSec = (debug.durationMs / 1000).toFixed(2);
+            const now = new Date().toISOString();
+
+            const logContent = `# 🛠️ AI エージェント実行ログ (最新)
+
+- **記録日時**: ${now}
+- **対象エージェント**: ${debug.agentId} (\`${debug.command}\`)
+- **実行可能パス**: \`${debug.exePath}\`
+- **作業ディレクトリ (CWD)**: \`${debug.cwd}\`
+- **所要時間**: ${debug.durationMs.toLocaleString()} ms (${durationSec}秒)
+- **終了コード**: \`${debug.exitCode ?? '不明'}\`
+- **成果物差分**: 新規 ${created.length}件 (${created.join(', ') || 'なし'}), 更新 ${modified.length}件 (${modified.join(', ') || 'なし'})
+
+---
+
+## 1. 実行引数 (Args)
+\`\`\`json
+${JSON.stringify(debug.args, null, 2)}
+\`\`\`
+
+---
+
+## 2. 投入プロンプト全文 (Prompt, ${debug.prompt.length} 文字)
+\`\`\`text
+${debug.prompt}
+\`\`\`
+
+---
+
+## 3. 標準エラー出力 (stderr)
+${debug.stderr ? '```text\n' + debug.stderr + '\n```' : '*(標準エラー出力なし)*'}
+
+---
+
+## 4. エージェント応答・標準出力 (stdout)
+\`\`\`text
+${debug.stdout || '*(標準出力なし)*'}
+\`\`\`
+`;
+            fs.writeFileSync(debugFilePath, logContent, 'utf-8');
+            console.log(`[AI Notebook] Saved debug log to ${debugFilePath}`);
+        } catch (e) {
+            console.warn('[AI Notebook] Failed to save agent debug log:', e);
         }
     }
 }
