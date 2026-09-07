@@ -43,23 +43,31 @@ export interface AIAgentAdapter {
 }
 
 /**
- * 拡張 PATH 環境変数を生成
+ * 拡張 PATH 環境変数を生成（Mac / Windows 両対応）
  */
 export function getExtendedEnv(): NodeJS.ProcessEnv {
     const home = os.homedir();
-    const extraPaths = [
-        path.join(home, '.local', 'bin'),
-        path.join(home, '.antigravity', 'bin'),
-        path.join(home, '.gemini', 'antigravity', 'bin'),
-        '/usr/local/bin',
-        '/opt/homebrew/bin',
-        '/usr/bin',
-        '/bin'
-    ];
+    const isWin = process.platform === 'win32';
+    const extraPaths = isWin
+        ? [
+            path.join(home, 'AppData', 'Roaming', 'npm'),
+            path.join(home, '.antigravity', 'bin'),
+            path.join(home, '.gemini', 'antigravity', 'bin'),
+            path.join(process.env.ProgramFiles || 'C:\\Program Files', 'nodejs')
+        ]
+        : [
+            path.join(home, '.local', 'bin'),
+            path.join(home, '.antigravity', 'bin'),
+            path.join(home, '.gemini', 'antigravity', 'bin'),
+            '/usr/local/bin',
+            '/opt/homebrew/bin',
+            '/usr/bin',
+            '/bin'
+        ];
 
     const currentPath = process.env.PATH || '';
-    const combinedPath = extraPaths.concat(currentPath.split(':')).filter(Boolean);
-    const uniquePath = Array.from(new Set(combinedPath)).join(':');
+    const combinedPath = extraPaths.concat(currentPath.split(path.delimiter)).filter(Boolean);
+    const uniquePath = Array.from(new Set(combinedPath)).join(path.delimiter);
 
     return {
         ...process.env,
@@ -68,32 +76,53 @@ export function getExtendedEnv(): NodeJS.ProcessEnv {
 }
 
 /**
- * コマンド名から実際の実行パスを解決（agy / antigravity の相互フォールバック対応）
+ * コマンド名から実際の実行パスを解決（Windows の .cmd / .bat / .exe 自動補完および agy / antigravity 相互フォールバック）
  */
 export function resolveCommandPath(command: string): string {
     if (path.isAbsolute(command)) {
         return command;
     }
 
-    const candidates = [command];
+    const isWin = process.platform === 'win32';
+    const baseCandidates = [command];
     if (command === 'antigravity' || command === 'agy') {
-        candidates.push('agy', 'antigravity');
+        baseCandidates.push('agy', 'antigravity');
+    }
+
+    // Windows の場合は拡張子バリエーション (.cmd, .bat, .exe) も網羅
+    const candidates: string[] = [];
+    for (const base of baseCandidates) {
+        candidates.push(base);
+        if (isWin && !path.extname(base)) {
+            candidates.push(`${base}.cmd`, `${base}.bat`, `${base}.exe`);
+        }
     }
     const uniqueCandidates = Array.from(new Set(candidates));
 
     const home = os.homedir();
-    const searchDirs = [
-        path.join(home, '.local', 'bin'),
-        path.join(home, '.antigravity', 'bin'),
-        path.join(home, '.gemini', 'antigravity', 'bin'),
-        '/usr/local/bin',
-        '/opt/homebrew/bin',
-        '/usr/bin',
-        '/bin'
-    ];
+    const searchDirs = isWin
+        ? [
+            path.join(home, 'AppData', 'Roaming', 'npm'),
+            path.join(home, '.antigravity', 'bin'),
+            path.join(home, '.gemini', 'antigravity', 'bin'),
+            path.join(process.env.ProgramFiles || 'C:\\Program Files', 'nodejs')
+        ]
+        : [
+            path.join(home, '.local', 'bin'),
+            path.join(home, '.antigravity', 'bin'),
+            path.join(home, '.gemini', 'antigravity', 'bin'),
+            '/usr/local/bin',
+            '/opt/homebrew/bin',
+            '/usr/bin',
+            '/bin'
+        ];
+
+    // PATH 環境変数のディレクトリも検索対象に追加
+    const envPaths = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+    const allSearchDirs = Array.from(new Set([...searchDirs, ...envPaths]));
 
     for (const cand of uniqueCandidates) {
-        for (const dir of searchDirs) {
+        for (const dir of allSearchDirs) {
             const fullPath = path.join(dir, cand);
             if (fs.existsSync(fullPath)) {
                 return fullPath;
@@ -206,7 +235,7 @@ export function runSpawnAgent(
         const child: ChildProcess = spawn(command, args, {
             cwd: options.cwd,
             env: options.env,
-            shell: false
+            shell: process.platform === 'win32'
         });
 
         // 対話型入力待ちによるハング防止のため、stdin を即時クローズ

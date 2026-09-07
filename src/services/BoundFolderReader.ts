@@ -55,8 +55,9 @@ export class BoundFolderReader {
         const resolvedBase = path.resolve(basePath);
         const resolvedTarget = path.resolve(resolvedBase, relativePath);
 
-        // resolvedTarget が resolvedBase 配下に収まっているか確認
-        if (!resolvedTarget.startsWith(resolvedBase)) {
+        // resolvedTarget が resolvedBase 配下に収まっているか確認 (Windows / Mac 両対応)
+        const rel = path.relative(resolvedBase, resolvedTarget);
+        if (rel.startsWith('..') || path.isAbsolute(rel)) {
             throw new Error(`不正なパス指定です（パストラバーサル検知）: ${relativePath}`);
         }
         return resolvedTarget;

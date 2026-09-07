@@ -600,18 +600,20 @@ export class AINotebookDetailView extends ItemView {
 
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
+            const fileName = path.basename(file.name);
             const localPath = (file as any).path;
 
             // Step 1: D&Dイベント検知ログ
             DebugFolderHelper.logPipelineStep(
-                file.name,
+                fileName,
                 1,
                 'Event',
-                `ファイル検知: ${file.name} (サイズ: ${file.size.toLocaleString()} bytes, MIME: ${file.type || 'none'})`,
-                { name: file.name, size: file.size, type: file.type, localPath }
+                `ファイル検知: ${fileName} (サイズ: ${file.size.toLocaleString()} bytes, MIME: ${file.type || 'none'})`,
+                { name: fileName, size: file.size, type: file.type, localPath }
             );
 
             let buffer: ArrayBuffer | Buffer | null = null;
+            let fileLockDetected = false;
             
             // Step 2: Electron 環境でのローカルファイル読み込み
             if (localPath && typeof require !== 'undefined') {
@@ -619,18 +621,26 @@ export class AINotebookDetailView extends ItemView {
                     const fs = require('fs');
                     if (fs.existsSync(localPath)) {
                         buffer = fs.readFileSync(localPath);
-                        DebugFolderHelper.logPipelineStep(file.name, 2, 'Read', `Electron fs 経由でバッファ取得 (${buffer?.byteLength} bytes)`);
+                        DebugFolderHelper.logPipelineStep(fileName, 2, 'Read', `Electron fs 経由でバッファ取得 (${buffer?.byteLength} bytes)`);
                     }
-                } catch (e) {
-                    console.warn(`Failed to read file via fs: ${localPath}`, e);
+                } catch (e: any) {
+                    if (e?.code === 'EBUSY' || e?.message?.includes('busy') || e?.message?.includes('locked')) {
+                        fileLockDetected = true;
+                        DebugFolderHelper.logPipelineError(fileName, 2, 'Read (Lock Detected)', e, { localPath, reason: 'Windows排他ロック検知' });
+                    } else {
+                        console.warn(`Failed to read file via fs: ${localPath}`, e);
+                    }
                 }
             }
 
             if (!buffer || (buffer as any).byteLength === 0) {
                 try {
                     buffer = await file.arrayBuffer();
-                } catch (readErr) {
-                    DebugFolderHelper.logPipelineError(file.name, 2, 'Read', readErr);
+                } catch (readErr: any) {
+                    if (readErr?.name === 'NotReadableError' || readErr?.message?.includes('locked')) {
+                        fileLockDetected = true;
+                    }
+                    DebugFolderHelper.logPipelineError(fileName, 2, 'Read', readErr);
                 }
             }
 
@@ -645,7 +655,9 @@ export class AINotebookDetailView extends ItemView {
                         if (fs.existsSync(localPath)) {
                             buffer = fs.readFileSync(localPath);
                         }
-                    } catch {}
+                    } catch (e: any) {
+                        if (e?.code === 'EBUSY') fileLockDetected = true;
+                    }
                 }
                 if (!buffer || (buffer as any).byteLength === 0) {
                     try {
@@ -655,27 +667,33 @@ export class AINotebookDetailView extends ItemView {
             }
 
             if (!buffer || buffer.byteLength === 0) {
-                const emptyErr = new Error(`ファイル "${file.name}" のデータが空（0バイト）です。`);
-                DebugFolderHelper.logPipelineError(file.name, 2, 'Read', emptyErr, { localPath, fileSize: file.size });
-                new Notice(`⚠️ "${file.name}" のデータが空（0バイト）です。ファイルの保存中または未同期の可能性があります。スキップしました。`, 6000);
+                if (fileLockDetected) {
+                    const lockMsg = `⚠️ "${fileName}" はExcel等の別アプリケーションで開かれているため、Windowsの排他ロックにより読み込めませんでした。ファイルを閉じてから再度ドロップしてください。`;
+                    DebugFolderHelper.logPipelineError(fileName, 2, 'Read (Windows File Lock)', new Error(lockMsg), { localPath });
+                    new Notice(lockMsg, 10000);
+                } else {
+                    const emptyErr = new Error(`ファイル "${fileName}" のデータが空（0バイト）です。`);
+                    DebugFolderHelper.logPipelineError(fileName, 2, 'Read', emptyErr, { localPath, fileSize: file.size });
+                    new Notice(`⚠️ "${fileName}" のデータが空（0バイト）です。ファイルの保存中または未同期の可能性があります。スキップしました。`, 6000);
+                }
                 continue;
             }
 
             try {
-                const result = await this.plugin.notebookManager.addSourceFile(this.notebookId, file.name, buffer);
+                const result = await this.plugin.notebookManager.addSourceFile(this.notebookId, fileName, buffer);
                 if (result.transcriptionFailed) {
                     failedCount++;
-                    new Notice(`⚠️ "${file.name}" のテキスト変換に失敗しました: ${result.error}\n（原本バイナリを直接保存しました）`, 8000);
+                    new Notice(`⚠️ "${fileName}" のテキスト変換に失敗しました: ${result.error}\n（原本バイナリを直接保存しました）`, 8000);
                 } else if (result.isConverted) {
                     convertedCount++;
-                    new Notice(`✅ "${file.name}" を Markdown に変換しました (${result.metrics?.lineCount || 0}行)`, 4000);
+                    new Notice(`✅ "${fileName}" を Markdown に変換しました (${result.metrics?.lineCount || 0}行)`, 4000);
                 } else {
                     addedCount++;
                 }
             } catch (err: any) {
-                DebugFolderHelper.logPipelineError(file.name, 5, 'Save', err);
-                console.error(`Failed to add source file ${file.name}:`, err);
-                new Notice(`❌ "${file.name}" の追加に失敗しました: ${err?.message || err}`, 6000);
+                DebugFolderHelper.logPipelineError(fileName, 5, 'Save', err);
+                console.error(`Failed to add source file ${fileName}:`, err);
+                new Notice(`❌ "${fileName}" の追加に失敗しました: ${err?.message || err}`, 6000);
             }
         }
 
@@ -687,7 +705,7 @@ export class AINotebookDetailView extends ItemView {
             if (failedCount > 0) summaryParts.push(`⚠️ ${failedCount}件の変換失敗(原本保存)`);
 
             const debugHint = (this.plugin.settings.enableDebugActions ?? true)
-                ? `\n💡 ヘッダーの「📂 実フォルダ」からFinderで即座に確認できます`
+                ? `\n💡 ヘッダーの「🔍 左ペインで表示」から即座に確認できます`
                 : '';
             new Notice(`📥 ${summaryParts.join('、')}${debugHint}`, 6000);
         }

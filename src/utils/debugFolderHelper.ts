@@ -1,4 +1,4 @@
-import { App, TFile, TFolder, FileSystemAdapter, Notice, setIcon, Modal } from 'obsidian';
+import { App, TFile, TFolder, FileSystemAdapter, Notice, setIcon, Modal, normalizePath } from 'obsidian';
 import * as path from 'path';
 import { NotebookSource } from '../types';
 
@@ -6,7 +6,7 @@ import { NotebookSource } from '../types';
  * 🛠️ デバッグ・実フォルダ連携支援ヘルパー
  * 
  * 【設計思想 - 将来外しやすい疎結合設計 (Detachable Architecture)】:
- * - デバッグ動線・切り分けログ・実フォルダ展開（Finder/Obsidian左ペイン）に関するロジックを本モジュールに完全カプセル化。
+ * - デバッグ動線・切り分けログ・実フォルダ展開（Obsidian左ペイン/OS）に関するロジックを本モジュールに完全カプセル化。
  * - 将来このデバッグ機能が不要になった際は、本ファイルを削除し、呼び出し元の数行を削除または設定トグルをOFFにするだけで、
  *   プラグイン本体のコアロジックに影響を与えずに安全に撤去可能です。
  */
@@ -16,7 +16,8 @@ export class DebugFolderHelper {
      */
     public static openInSystemExplorer(app: App, vaultRelativePath: string): boolean {
         try {
-            const abstractFile = app.vault.getAbstractFileByPath(vaultRelativePath);
+            const normalized = normalizePath(vaultRelativePath);
+            const abstractFile = app.vault.getAbstractFileByPath(normalized);
             
             // 1. Obsidian 組み込み API の利用
             if (abstractFile && typeof (app as any).showInFolder === 'function') {
@@ -27,7 +28,7 @@ export class DebugFolderHelper {
             // 2. Electron shell API の利用 (フルパス解決)
             if (app.vault.adapter instanceof FileSystemAdapter) {
                 const basePath = app.vault.adapter.getBasePath();
-                const fullPath = path.join(basePath, vaultRelativePath);
+                const fullPath = path.join(basePath, normalized);
                 
                 // Electron の require
                 const electron = typeof window !== 'undefined' && (window as any).require
@@ -44,7 +45,7 @@ export class DebugFolderHelper {
                 }
             }
 
-            new Notice(`📂 実パス: ${vaultRelativePath}`, 5000);
+            new Notice(`📂 実パス: ${normalized}`, 5000);
             return false;
         } catch (err) {
             console.error('[AI Notebook 🛠️ Debug] Failed to open in system explorer:', err);
@@ -58,9 +59,10 @@ export class DebugFolderHelper {
      */
     public static revealInObsidianExplorer(app: App, vaultRelativePath: string): boolean {
         try {
-            const abstractFile = app.vault.getAbstractFileByPath(vaultRelativePath);
+            const normalized = normalizePath(vaultRelativePath);
+            const abstractFile = app.vault.getAbstractFileByPath(normalized);
             if (!abstractFile) {
-                new Notice(`⚠️ Vault内にファイルが見つかりません: ${vaultRelativePath}`);
+                new Notice(`⚠️ Vault内にファイルが見つかりません: ${normalized}`);
                 return false;
             }
 
@@ -88,13 +90,14 @@ export class DebugFolderHelper {
      */
     public static async openInEditor(app: App, vaultRelativePath: string): Promise<boolean> {
         try {
-            const file = app.vault.getAbstractFileByPath(vaultRelativePath);
+            const normalized = normalizePath(vaultRelativePath);
+            const file = app.vault.getAbstractFileByPath(normalized);
             if (file instanceof TFile) {
                 const leaf = app.workspace.getLeaf('tab');
                 await leaf.openFile(file);
                 return true;
             } else {
-                new Notice(`⚠️ ファイルを開けません (非テキストまたは未存在): ${vaultRelativePath}`);
+                new Notice(`⚠️ ファイルを開けません (非テキストまたは未存在): ${normalized}`);
                 return false;
             }
         } catch (err) {
@@ -155,26 +158,26 @@ export class DebugFolderHelper {
     ): void {
         const wrap = container.createDiv({ cls: 'ai-notebook-debug-header-actions' });
 
-        // Finder で開くボタン
-        const openFinderBtn = wrap.createEl('button', {
-            cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-debug',
-            text: ' 📂 実フォルダ (Finder)'
-        });
-        openFinderBtn.setAttribute('title', `OSファイルマネージャで実フォルダを開く\n(${options.sourcesPath})`);
-        openFinderBtn.onclick = (e) => {
-            e.stopPropagation();
-            DebugFolderHelper.openInSystemExplorer(options.app, options.sourcesPath);
-        };
-
-        // Obsidian左ペインで表示ボタン
+        // 1. Obsidian左ペインで表示ボタン (ユーザー本命の動線)
         const revealExplorerBtn = wrap.createEl('button', {
             cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-debug',
             text: ' 🔍 左ペインで表示'
         });
-        revealExplorerBtn.setAttribute('title', `Obsidianの左ペイン（ファイルエクスプローラ）でフォルダを展開・選択`);
+        revealExplorerBtn.setAttribute('title', `Obsidianの左ペイン（ファイルツリー）で sources フォルダを展開・フォーカス`);
         revealExplorerBtn.onclick = (e) => {
             e.stopPropagation();
             DebugFolderHelper.revealInObsidianExplorer(options.app, options.sourcesPath);
+        };
+
+        // 2. OSフォルダで開くボタン (補助動線)
+        const openFinderBtn = wrap.createEl('button', {
+            cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-debug',
+            text: ' 📂 フォルダを開く'
+        });
+        openFinderBtn.setAttribute('title', `OSのファイルマネージャー(エクスプローラー/Finder)で実フォルダを開く`);
+        openFinderBtn.onclick = (e) => {
+            e.stopPropagation();
+            DebugFolderHelper.openInSystemExplorer(options.app, options.sourcesPath);
         };
     }
 
