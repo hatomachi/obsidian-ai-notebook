@@ -3,3 +3,4 @@ main.js
 test-vault/
 .DS_Store
 .build/
+dist/

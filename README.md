@@ -34,20 +34,44 @@ Google NotebookLM のようなコンテキスト駆動型ワークスペース�
 2. Obsidian Vault の `.obsidian/plugins/obsidian-ai-notebook/` ディレクトリを作成し、上記3ファイルを配置します。
 3. Obsidian の設定 > コミュニティプラグイン で再読み込みし、`Obsidian AI Notebook` を有効化します。
 
----
-
 ## 開発・ビルド
 
 ```bash
 # 依存関係のインストール
 npm install
 
-# ビルド
+# Obsidian プラグインビルド
 npm run build
 
 # 開発モード (ファイル変更を監視して自動ビルド)
 npm run dev
+
+# 単体テスト実行
+npm test
+
+# モバイル Web SPA ビューアのビルド (Nginx配信用: dist/ に出力)
+npm run build:web
+
+# Web SPA ローカルプレビュー
+npm run preview:web
 ```
+
+---
+
+## モバイル Web SPA ビューア (会社スマホ / Edge対応)
+
+GitLab に同期した `_ainotebook` フォルダ配下のデータを、会社のスマートフォン（Edge ブラウザ等）から閲覧するための静的 SPA ビューアを同梱しています。
+
+1. **ビルド**:
+   ```bash
+   npm run build:web
+   ```
+   `dist/` ディレクトリに完全な静的 HTML/JS/CSS（Vanilla TS、約70KBの超軽量バンドル）が出力されます。
+2. **Nginx での静的ホスト**:
+   任意のパス（ルート `/` またはサブパス `/ainotebook/` 等）に `dist/` 配下のファイルを配置して Nginx でホストします。
+3. **GitLab 連携設定**:
+   - 画面右上の ⚙️ アイコンから、社内 GitLab の URL（または ALB リバースプロキシ）、Project ID、Branch、PAT（Personal Access Token）を設定します。
+   - トークンは端末の `localStorage` にのみ安全に保存され、GitLab REST API 経由で直接 `_ainotebook/` 配下のノートブック一覧、成果物、ソース、チャット履歴を取得・閲覧できます。
 
 ---
 
