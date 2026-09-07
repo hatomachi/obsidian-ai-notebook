@@ -34,10 +34,78 @@ export class NotebookManager {
         await this.ensureSampleData();
     }
 
-    private async ensureFolder(path: string): Promise<void> {
-        const folder = this.app.vault.getAbstractFileByPath(path);
-        if (!folder) {
-            await this.app.vault.createFolder(path);
+    private async ensureFolder(folderPath: string): Promise<void> {
+        const normalized = normalizePath(folderPath);
+        if (!normalized || normalized === '/' || normalized === '.') return;
+
+        const parts = normalized.split('/');
+        let current = '';
+        for (const part of parts) {
+            current = current ? `${current}/${part}` : part;
+            const existing = this.app.vault.getAbstractFileByPath(current);
+            if (!existing) {
+                try {
+                    await this.app.vault.createFolder(current);
+                } catch (e: any) {
+                    // 並行実行や Obsidian の同期遅延で既に作成済みの場合は安全に無視
+                    const errMsg = (e?.message || String(e)).toLowerCase();
+                    if (!errMsg.includes('already exists')) {
+                        throw e;
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * テキストファイルを安全に作成または上書き（並行競合時の File already exists を吸収）
+     */
+    private async safeCreateOrModify(filePath: string, content: string): Promise<TFile> {
+        const normalized = normalizePath(filePath);
+        const existing = this.app.vault.getAbstractFileByPath(normalized);
+        if (existing instanceof TFile) {
+            await this.app.vault.modify(existing, content);
+            return existing;
+        }
+
+        try {
+            return await this.app.vault.create(normalized, content);
+        } catch (e: any) {
+            const errMsg = (e?.message || String(e)).toLowerCase();
+            if (errMsg.includes('already exists')) {
+                const refreshed = this.app.vault.getAbstractFileByPath(normalized);
+                if (refreshed instanceof TFile) {
+                    await this.app.vault.modify(refreshed, content);
+                    return refreshed;
+                }
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * バイナリファイルを安全に作成または上書き（並行競合時の File already exists を吸収）
+     */
+    private async safeCreateOrModifyBinary(filePath: string, buffer: ArrayBuffer): Promise<TFile> {
+        const normalized = normalizePath(filePath);
+        const existing = this.app.vault.getAbstractFileByPath(normalized);
+        if (existing instanceof TFile) {
+            await this.app.vault.modifyBinary(existing, buffer);
+            return existing;
+        }
+
+        try {
+            return await this.app.vault.createBinary(normalized, buffer);
+        } catch (e: any) {
+            const errMsg = (e?.message || String(e)).toLowerCase();
+            if (errMsg.includes('already exists')) {
+                const refreshed = this.app.vault.getAbstractFileByPath(normalized);
+                if (refreshed instanceof TFile) {
+                    await this.app.vault.modifyBinary(refreshed, buffer);
+                    return refreshed;
+                }
+            }
+            throw e;
         }
     }
 
@@ -754,34 +822,17 @@ export class NotebookManager {
 
                 // 変換後 Markdown を sources 直下に作成
                 const mdPath = normalizePath(`${sourcesDir}/${convertedFilename}`);
-                const existingMd = this.app.vault.getAbstractFileByPath(mdPath);
-                let resultFile: TFile;
-
-                if (existingMd instanceof TFile) {
-                    await this.app.vault.modify(existingMd, markdown);
-                    resultFile = existingMd;
-                } else {
-                    resultFile = await this.app.vault.create(mdPath, markdown);
-                }
+                const resultFile = await this.safeCreateOrModify(mdPath, markdown);
 
                 // 原本バイナリを sources/.cache/ 配下に保存（差分検知や再同期用）
                 const cacheDir = normalizePath(`${sourcesDir}/.cache`);
                 await this.ensureFolder(cacheDir);
                 const rawPath = normalizePath(`${cacheDir}/${fileName}`);
-                const existingRaw = this.app.vault.getAbstractFileByPath(rawPath);
 
-                if (existingRaw instanceof TFile) {
-                    if (typeof data === 'string') {
-                        await this.app.vault.modify(existingRaw, data);
-                    } else {
-                        await this.app.vault.modifyBinary(existingRaw, toArrayBuffer(data));
-                    }
+                if (typeof data === 'string') {
+                    await this.safeCreateOrModify(rawPath, data);
                 } else {
-                    if (typeof data === 'string') {
-                        await this.app.vault.create(rawPath, data);
-                    } else {
-                        await this.app.vault.createBinary(rawPath, toArrayBuffer(data));
-                    }
+                    await this.safeCreateOrModifyBinary(rawPath, toArrayBuffer(data));
                 }
 
                 DebugFolderHelper.logPipelineStep(
@@ -804,22 +855,11 @@ export class NotebookManager {
 
                 // フォールバック: 原本を sources 直下に直接保存
                 const fallbackPath = normalizePath(`${sourcesDir}/${fileName}`);
-                const existing = this.app.vault.getAbstractFileByPath(fallbackPath);
                 let fallbackFile: TFile;
-
-                if (existing instanceof TFile) {
-                    if (typeof data === 'string') {
-                        await this.app.vault.modify(existing, data);
-                    } else {
-                        await this.app.vault.modifyBinary(existing, toArrayBuffer(data));
-                    }
-                    fallbackFile = existing;
+                if (typeof data === 'string') {
+                    fallbackFile = await this.safeCreateOrModify(fallbackPath, data);
                 } else {
-                    if (typeof data === 'string') {
-                        fallbackFile = await this.app.vault.create(fallbackPath, data);
-                    } else {
-                        fallbackFile = await this.app.vault.createBinary(fallbackPath, toArrayBuffer(data));
-                    }
+                    fallbackFile = await this.safeCreateOrModifyBinary(fallbackPath, toArrayBuffer(data));
                 }
 
                 DebugFolderHelper.logPipelineStep(fileName, 5, 'Save (Fallback)', `原本バイナリを直接保存しました: ${fileName}`);
@@ -836,22 +876,12 @@ export class NotebookManager {
         // 非Office文書（通常テキスト・PDF・画像など）
         DebugFolderHelper.logPipelineStep(fileName, 3, 'Route', `非Office文書のため直接保存します`);
         const filePath = normalizePath(`${sourcesDir}/${fileName}`);
-        const existing = this.app.vault.getAbstractFileByPath(filePath);
         let directFile: TFile;
 
-        if (existing instanceof TFile) {
-            if (typeof data === 'string') {
-                await this.app.vault.modify(existing, data);
-            } else {
-                await this.app.vault.modifyBinary(existing, toArrayBuffer(data));
-            }
-            directFile = existing;
+        if (typeof data === 'string') {
+            directFile = await this.safeCreateOrModify(filePath, data);
         } else {
-            if (typeof data === 'string') {
-                directFile = await this.app.vault.create(filePath, data);
-            } else {
-                directFile = await this.app.vault.createBinary(filePath, toArrayBuffer(data));
-            }
+            directFile = await this.safeCreateOrModifyBinary(filePath, toArrayBuffer(data));
         }
 
         DebugFolderHelper.logPipelineStep(fileName, 5, 'Save', `直接保存完了: ${fileName}`);
@@ -895,12 +925,7 @@ export class NotebookManager {
 
             // 変換後 Markdown を sources 直下に作成
             const mdPath = normalizePath(`${sourcesDir}/${convertedFilename}`);
-            const existingMd = this.app.vault.getAbstractFileByPath(mdPath);
-            if (existingMd instanceof TFile) {
-                await this.app.vault.modify(existingMd, markdown);
-            } else {
-                await this.app.vault.create(mdPath, markdown);
-            }
+            await this.safeCreateOrModify(mdPath, markdown);
 
             // 原本を .cache/ に移動（sources/ 直下にある場合は .cache へ移管して sources/ 直下の原本を削除）
             const cacheDir = normalizePath(`${sourcesDir}/.cache`);
@@ -908,12 +933,7 @@ export class NotebookManager {
             const cachePath = normalizePath(`${cacheDir}/${fileName}`);
 
             if (rawFile.path === rawInSources) {
-                const existingCache = this.app.vault.getAbstractFileByPath(cachePath);
-                if (existingCache instanceof TFile) {
-                    await this.app.vault.modifyBinary(existingCache, arrayBuf);
-                } else {
-                    await this.app.vault.createBinary(cachePath, arrayBuf);
-                }
+                await this.safeCreateOrModifyBinary(cachePath, arrayBuf);
                 await this.app.vault.delete(rawFile);
             }
 

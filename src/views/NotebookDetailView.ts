@@ -33,6 +33,9 @@ export class AINotebookDetailView extends ItemView {
     isExecuting: boolean = false;
     abortController: AbortController | null = null;
 
+    // ファイル投入・D&D排他処理フラグ
+    private isProcessingFiles: boolean = false;
+
     onBackToGalleryHandler?: () => void;
     onSendMessageHandler?: (prompt: string) => Promise<void>;
 
@@ -467,15 +470,22 @@ export class AINotebookDetailView extends ItemView {
         // ドロップゾーンおよびセクション全体での D&D 受け付け
         const handleDragOver = (e: DragEvent) => {
             e.preventDefault();
+            e.stopPropagation();
             dropZone.addClass('is-dragover');
         };
         const handleDragLeave = (e: DragEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
             dropZone.removeClass('is-dragover');
         };
         const handleDrop = async (e: DragEvent) => {
             e.preventDefault();
+            e.stopPropagation();
+            if (e.stopImmediatePropagation) {
+                e.stopImmediatePropagation();
+            }
             dropZone.removeClass('is-dragover');
-            if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+            if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
                 await this.handleFilesAdded(e.dataTransfer.files);
             }
         };
@@ -485,6 +495,7 @@ export class AINotebookDetailView extends ItemView {
         dropZone.ondrop = handleDrop;
 
         sourceSection.ondragover = handleDragOver;
+        sourceSection.ondragleave = handleDragLeave;
         sourceSection.ondrop = handleDrop;
 
         // ソース一覧リスト
@@ -592,11 +603,14 @@ export class AINotebookDetailView extends ItemView {
      * ファイル投入の処理ハンドラー（パイプライン切り分けログ・レース状態対策・0バイトガード・結果可視化）
      */
     private async handleFilesAdded(files: FileList): Promise<void> {
-        if (!this.notebookId) return;
+        if (!this.notebookId || this.isProcessingFiles) return;
+        this.isProcessingFiles = true;
 
         let addedCount = 0;
         let convertedCount = 0;
         let failedCount = 0;
+
+        try {
 
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
@@ -711,6 +725,9 @@ export class AINotebookDetailView extends ItemView {
         }
 
         await this.refresh();
+        } finally {
+            this.isProcessingFiles = false;
+        }
     }
 
     // ==========================================
