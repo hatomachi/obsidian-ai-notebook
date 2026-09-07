@@ -2,6 +2,8 @@ name: Release Obsidian Plugin
 
 on:
   push:
+    branches:
+      - main
     tags:
       - '*'
   workflow_dispatch:
@@ -12,7 +14,7 @@ on:
         default: ''
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-plugin
   cancel-in-progress: false
 
 permissions:
