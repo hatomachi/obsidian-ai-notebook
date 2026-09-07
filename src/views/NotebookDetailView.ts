@@ -1,6 +1,6 @@
 import { ItemView, WorkspaceLeaf, setIcon, TFile, Notice, FileSystemAdapter, MarkdownRenderer } from 'obsidian';
 import type AINotebookPlugin from '../main';
-import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AgentDebugInfo, AgentMode, AGENT_MODE_LABELS } from '../types';
+import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AgentDebugInfo } from '../types';
 import { ArtifactModal } from './modals/ArtifactModal';
 import { LinkNotebookModal } from './modals/LinkNotebookModal';
 import { BoundFolderExplorerModal } from './modals/BoundFolderExplorerModal';
@@ -29,9 +29,6 @@ export class AINotebookDetailView extends ItemView {
     currentSessionId: string | null = null;
     currentSession: ChatSession | null = null;
     chatHistory: ChatMessage[] = [];
-
-    // 実行モード（相談=読み取りのみ / 作成=成果物を書く）。既定は相談。
-    currentMode: AgentMode = 'consult';
 
     // エージェント実行・キャンセル状態
     isExecuting: boolean = false;
@@ -929,24 +926,6 @@ export class AINotebookDetailView extends ItemView {
                 }
             };
         } else {
-            // 実行モード切替。Claude Code の --permission-mode にそのまま対応する。
-            const modeToggle = inputArea.createDiv({ cls: 'ai-notebook-mode-toggle' });
-            (['consult', 'build'] as AgentMode[]).forEach((m) => {
-                const btn = modeToggle.createEl('button', {
-                    cls: 'ai-notebook-mode-btn' + (this.currentMode === m ? ' is-active' : ''),
-                    text: AGENT_MODE_LABELS[m]
-                });
-                btn.setAttribute('title', m === 'consult'
-                    ? '読み取りのみ。計画や構成案を返します (書き込み系ツールを無効化)'
-                    : '成果物を artifacts/ に作成・編集します');
-                btn.onclick = () => {
-                    if (this.currentMode === m) return;
-                    this.currentMode = m;
-                    modeToggle.findAll('.ai-notebook-mode-btn').forEach(el => el.removeClass('is-active'));
-                    btn.addClass('is-active');
-                };
-            });
-
             const sendBtn = inputArea.createEl('button', { cls: 'ai-notebook-btn ai-notebook-btn-primary' });
             setIcon(sendBtn, 'send');
             sendBtn.setAttribute('title', '送信 (Ctrl+Enter / Cmd+Enter / Enter)');
@@ -1286,7 +1265,6 @@ export class AINotebookDetailView extends ItemView {
                 boundFolderTreeText: boundFolderTreeText,
                 boundMmChannels: this.metadata?.boundMmChannels || [],
                 // 対話履歴はテキストで再注入せず、CLI 側のセッションを --resume で引き継ぐ
-                mode: this.currentMode,
                 agentSessionId: this.currentSession.agentSessionId,
                 resumeSession: !!this.currentSession.agentSessionId,
                 onStdoutChunk: onStdoutChunk,

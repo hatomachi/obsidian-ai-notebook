@@ -6,7 +6,7 @@ import * as os from 'os';
 
 export const execAsync = promisify(exec);
 
-import { LinkedContext, MattermostChannelRef, AgentDebugInfo, AgentMode } from '../types';
+import { LinkedContext, MattermostChannelRef, AgentDebugInfo } from '../types';
 import { ensureNotebookProject, buildClaudeMdContent, NotebookProjectResult } from '../services/NotebookProjectFile';
 
 export interface AgentOptions {
@@ -19,9 +19,6 @@ export interface AgentOptions {
     boundMmChannels?: MattermostChannelRef[]; // 連携されたMattermostチャンネル情報
     onStdoutChunk?: (chunk: string) => void; // ストリーミング用コールバック
     abortSignal?: AbortSignal;               // キャンセル用シグナル
-
-    /** 実行モード。CLI の --permission-mode にマップされる。既定は 'consult' */
-    mode?: AgentMode;
 
     /** CLI 会話セッションID (UUID)。プラグイン側で採番する */
     agentSessionId?: string;

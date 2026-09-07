@@ -59,30 +59,24 @@ async function runTests() {
     console.log('=== エージェント実行 単体テスト開始 ===');
 
     // ---------------------------------------------------------------
-    console.log('Test 1: 相談モードは「書けるツールを渡さない」ことで読み取り専用にすること');
-    const consult = buildClaudeArgs({ mode: 'consult', supports: modern, additionalReadDirs: [] });
-    const build = buildClaudeArgs({ mode: 'build', supports: modern, additionalReadDirs: [] });
+    console.log('Test 1: 承認プロンプトが発生しうる引数を渡さないこと');
+    const args = buildClaudeArgs({ supports: modern, additionalReadDirs: [] }).args;
 
+    // -p には承認プロンプトに応答する手段がないため、常にバイパスする
+    assert.strictEqual(pairAfter(args, '--permission-mode'), 'bypassPermissions');
     // plan モードは ExitPlanMode の承認を人間に求めるため -p では停止する。使ってはいけない。
-    assert.ok(!consult.args.includes('plan'), '相談モードで --permission-mode plan を使わないこと');
-    assert.strictEqual(pairAfter(consult.args, '--permission-mode'), 'bypassPermissions',
-        '承認プロンプトが発生しないよう常にバイパスすること');
-    assert.strictEqual(pairAfter(build.args, '--permission-mode'), 'bypassPermissions');
-
-    const disallowed = pairAfter(consult.args, '--disallowedTools') || '';
-    for (const tool of ['Write', 'Edit', 'NotebookEdit', 'Bash']) {
-        assert.ok(disallowed.includes(tool), `相談モードで ${tool} を無効化すること`);
-    }
-    assert.ok(!build.args.includes('--disallowedTools'), '作成モードではツールを制限しないこと');
-
-    // 振る舞いの指示をプロンプトで注入しないので、システムプロンプト系フラグは使わない
-    assert.ok(!build.args.includes('--append-system-prompt'), 'システムプロンプトを注入しないこと');
-    // この版の CLI には存在しないフラグを渡さないこと
-    assert.ok(!build.args.includes('--max-turns'), '--max-turns を渡さないこと');
+    assert.ok(!args.includes('plan'), '--permission-mode plan を使わないこと');
+    // 「書けるツールを外す」ことは「計画を先に出させる」ことにならない。ツールで縛らない。
+    assert.ok(!args.includes('--disallowedTools'), 'ツールを制限しないこと');
+    assert.ok(!args.includes('--tools'), 'ツールを制限しないこと');
+    // 振る舞いの指示はプロンプトに注入しない
+    assert.ok(!args.includes('--append-system-prompt'), 'システムプロンプトを注入しないこと');
+    assert.ok(!args.includes('--max-turns'), 'この版に存在しないフラグを渡さないこと');
     console.log('  -> OK');
 
     // ---------------------------------------------------------------
     console.log('Test 2: stream-json は --verbose とセットで付くこと / -p は最後');
+    const build = buildClaudeArgs({ supports: modern, additionalReadDirs: [] });
     assert.strictEqual(build.streamJson, true, 'stream-json が有効になること');
     assert.strictEqual(pairAfter(build.args, '--output-format'), 'stream-json');
     assert.ok(build.args.includes('--verbose'), '--verbose が付くこと');
@@ -92,12 +86,11 @@ async function runTests() {
     // ---------------------------------------------------------------
     console.log('Test 3: 未対応フラグは渡さず、旧版へ安全に縮退すること');
     const legacy = buildClaudeArgs({
-        mode: 'build', supports: ancient,
+        supports: ancient,
         additionalReadDirs: ['/tmp/a'], agentSessionId: 'abc', resumeSession: true
     });
     assert.ok(!legacy.args.includes('--permission-mode'), '未対応なら --permission-mode を渡さない');
     assert.ok(legacy.args.includes('--dangerously-skip-permissions'), '旧フラグへフォールバックすること');
-    assert.ok(!legacy.args.includes('--disallowedTools'), '未対応なら --disallowedTools を渡さない');
     assert.strictEqual(legacy.streamJson, false, 'stream-json を無効化すること');
     assert.ok(!legacy.args.includes('--add-dir'), '未対応なら --add-dir を渡さない');
     assert.ok(!legacy.args.includes('--resume'), '未対応なら --resume を渡さない');
@@ -106,7 +99,7 @@ async function runTests() {
     // ---------------------------------------------------------------
     console.log('Test 4: セッション継続 (--session-id / --resume) と --add-dir');
     const fresh = buildClaudeArgs({
-        mode: 'build', supports: modern,
+        supports: modern,
         additionalReadDirs: ['/vault/nb_a/artifacts', '/vault/nb_b/artifacts'],
         agentSessionId: 'uuid-1', resumeSession: false
     });
@@ -115,7 +108,7 @@ async function runTests() {
     assert.strictEqual(fresh.args.filter(a => a === '--add-dir').length, 2, '参照先の数だけ --add-dir が付くこと');
 
     const resumed = buildClaudeArgs({
-        mode: 'build', supports: modern, additionalReadDirs: [],
+        supports: modern, additionalReadDirs: [],
         agentSessionId: 'uuid-1', resumeSession: true
     });
     assert.strictEqual(pairAfter(resumed.args, '--resume'), 'uuid-1', '2回目以降は --resume で継続すること');
@@ -232,6 +225,10 @@ async function runTests() {
 
     const settings = JSON.parse(fs.readFileSync(path.join(nbDir, '.claude', 'settings.json'), 'utf-8'));
     assert.deepStrictEqual(settings.permissions.additionalDirectories, result.additionalReadDirs, '参照先が読み取り許可に載ること');
+
+    // NOTEBOOK.md には作業の進め方の初期値が入るが、あくまでユーザー所有の層
+    const notebookMd = fs.readFileSync(path.join(nbDir, 'NOTEBOOK.md'), 'utf-8');
+    assert.ok(notebookMd.includes('まず構成案'), '「計画を先に出す」既定がユーザー編集可能な層に入ること');
 
     // NOTEBOOK.md は人間の資産。再生成で上書きされないこと。
     fs.writeFileSync(path.join(nbDir, 'NOTEBOOK.md'), '# 手書きの指示\n用語はAPIGWで統一\n', 'utf-8');

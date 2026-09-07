@@ -160,19 +160,6 @@ export interface ChatMessage {
 
 export type AIAgentType = 'antigravity' | 'claude';
 
-/**
- * エージェントの実行モード。
- * Claude Code の --permission-mode にそのまま対応させる。
- * 振る舞いをプロンプトで指示するのではなく、CLI 本来の権限モードで表現する。
- *   consult -> plan              (読み取りのみ。計画を返す)
- *   build   -> bypassPermissions (成果物を作成・編集する)
- */
-export type AgentMode = 'consult' | 'build';
-
-export const AGENT_MODE_LABELS: Record<AgentMode, string> = {
-    consult: '相談',
-    build: '作成'
-};
 
 export interface MattermostChannelRef {
     teamId: string;
