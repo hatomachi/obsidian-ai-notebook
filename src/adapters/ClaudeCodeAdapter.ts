@@ -1,4 +1,18 @@
-import { AIAgentAdapter, AgentOptions, AgentResult, getExtendedEnv, resolveCommandPath, snapshotArtifacts, detectArtifactsDiff, runSpawnAgentDetailed, buildDirectEditSystemPrompt } from './AgentAdapter';
+import {
+    AIAgentAdapter,
+    AgentOptions,
+    AgentResult,
+    getExtendedEnv,
+    resolveCommandPath,
+    snapshotArtifacts,
+    detectArtifactsDiff,
+    detectSupportedFlags,
+    runSpawnAgentDetailed,
+    prepareNotebookProject,
+    buildAgentSystemPrompt,
+    buildUserTurn
+} from './AgentAdapter';
+import { RETRY_DIRECTIVE } from './AgentCharter';
 import * as path from 'path';
 
 export class ClaudeCodeAdapter implements AIAgentAdapter {
@@ -13,47 +27,87 @@ export class ClaudeCodeAdapter implements AIAgentAdapter {
         const notebookDir = options.notebookDir || options.contextDir || process.cwd();
         const artifactsDir = options.artifactsDir || path.join(notebookDir, 'artifacts');
 
-        console.log(`[ClaudeCodeAdapter] Executing agent with command: "${command}", resolved path: "${exePath}", cwd: "${notebookDir}"`);
+        // L1: ノートブックフォルダをプロジェクト化（CLAUDE.md / AGENTS.md / .claude/settings.json）
+        const project = prepareNotebookProject(options);
 
-        // 実行前スナップショット
+        const supportedFlags = await detectSupportedFlags(exePath, env);
+        const supports = (flag: string) => supportedFlags.size === 0 ? false : supportedFlags.has(flag);
+
+        console.log(`[ClaudeCodeAdapter] cwd: "${notebookDir}", additionalReadDirs: ${project.additionalReadDirs.join(', ') || 'none'}`);
+
         const beforeSnapshot = snapshotArtifacts(artifactsDir);
 
-        // プロンプト構築
-        const prompt = buildDirectEditSystemPrompt(userPrompt, options);
+        const runOnce = async (opts: AgentOptions) => {
+            // L0+L1 はシステムプロンプト、L4(履歴+指示) は stdin。
+            // 巨大コンテキストによる指示の希釈と argv 長制限の両方を回避する。
+            const systemPrompt = buildAgentSystemPrompt(opts);
+            const userTurn = buildUserTurn(userPrompt, opts);
 
-        // CLI 引数の構築 (-p, --dangerously-skip-permissions)
-        const args = [
-            '-p', prompt,
-            '--dangerously-skip-permissions'
-        ];
+            const args: string[] = [];
+            if (supports('--append-system-prompt')) {
+                args.push('--append-system-prompt', systemPrompt);
+            }
+            if (supports('--max-turns') && opts.maxTurns) {
+                args.push('--max-turns', String(opts.maxTurns));
+            }
+            if (supports('--add-dir')) {
+                for (const dir of project.additionalReadDirs) {
+                    args.push('--add-dir', dir);
+                }
+            }
+            args.push('--dangerously-skip-permissions');
+            // -p を値なしで置くと stdin からプロンプトを読む
+            args.push('-p');
 
-        try {
+            // システムプロンプト分離に未対応のバージョンでは、単一プロンプトに結合して stdin へ流す
+            const stdinInput = supports('--append-system-prompt')
+                ? userTurn
+                : `${systemPrompt}\n\n${userTurn}`;
+
             const spawnResult = await runSpawnAgentDetailed(exePath, args, {
                 cwd: notebookDir,
                 env,
-                onStdoutChunk: options.onStdoutChunk,
-                abortSignal: options.abortSignal
+                onStdoutChunk: opts.onStdoutChunk,
+                abortSignal: opts.abortSignal,
+                stdinInput
             });
 
-            // 実行後成果物差分検知
-            const { created, modified } = detectArtifactsDiff(beforeSnapshot, artifactsDir);
-            console.log(`[ClaudeCodeAdapter] Artifacts diff - Created: ${created.join(', ') || 'none'}, Modified: ${modified.join(', ') || 'none'}`);
+            return { spawnResult, args, promptForDebug: `${systemPrompt}\n\n--- stdin ---\n${stdinInput}` };
+        };
+
+        try {
+            let attempt = await runOnce(options);
+            let diff = detectArtifactsDiff(beforeSnapshot, artifactsDir);
+            let retried = false;
+
+            // 構造的セーフティネット: 成果物が1件も動いていなければ、
+            // 「質問だけ返して終了」したとみなして1回だけ厳格に再実行する。
+            const nothingProduced = diff.created.length === 0 && diff.modified.length === 0;
+            if (nothingProduced && !options.abortSignal?.aborted) {
+                console.warn('[ClaudeCodeAdapter] No artifacts were produced. Retrying once with a strict directive.');
+                retried = true;
+                attempt = await runOnce({ ...options, retryDirective: RETRY_DIRECTIVE });
+                diff = detectArtifactsDiff(beforeSnapshot, artifactsDir);
+            }
+
+            console.log(`[ClaudeCodeAdapter] Artifacts diff - Created: ${diff.created.join(', ') || 'none'}, Modified: ${diff.modified.join(', ') || 'none'}${retried ? ' (after retry)' : ''}`);
 
             return {
-                text: spawnResult.stdout,
-                artifactsCreated: created,
-                artifactsModified: modified,
+                text: attempt.spawnResult.stdout,
+                artifactsCreated: diff.created,
+                artifactsModified: diff.modified,
                 debugInfo: {
                     agentId: this.id,
                     command,
                     exePath,
-                    args,
+                    args: attempt.args,
                     cwd: notebookDir,
-                    prompt,
-                    stdout: spawnResult.stdout,
-                    stderr: spawnResult.stderr,
-                    exitCode: spawnResult.exitCode,
-                    durationMs: spawnResult.durationMs
+                    prompt: attempt.promptForDebug,
+                    stdout: attempt.spawnResult.stdout,
+                    stderr: attempt.spawnResult.stderr,
+                    exitCode: attempt.spawnResult.exitCode,
+                    durationMs: attempt.spawnResult.durationMs,
+                    error: retried ? '初回実行で成果物が生成されなかったため自動再実行しました' : undefined
                 }
             };
         } catch (err: any) {

@@ -7,6 +7,8 @@ import * as os from 'os';
 export const execAsync = promisify(exec);
 
 import { LinkedContext, ChatMessage, MattermostChannelRef, AgentDebugInfo } from '../types';
+import { AGENT_CHARTER } from './AgentCharter';
+import { ensureNotebookProject, buildClaudeMdContent, NotebookProjectResult } from '../services/NotebookProjectFile';
 
 export interface AgentOptions {
     notebookDir: string;  // 当該ノートブックのルート絶対パス (<rootDir>/notebooks/<id>)。CLI の cwd
@@ -20,6 +22,13 @@ export interface AgentOptions {
     boundMmChannels?: MattermostChannelRef[]; // 連携されたMattermostチャンネル情報
     onStdoutChunk?: (chunk: string) => void; // ストリーミング用コールバック
     abortSignal?: AbortSignal;               // キャンセル用シグナル
+
+    // L1: ノートブックフォルダをプロジェクト化するためのメタ情報
+    notebookTitle?: string;       // CLAUDE.md の見出しに使用
+    notebookDescription?: string; // CLAUDE.md の概要に使用
+    boundFolderPath?: string;     // バインド外部フォルダの絶対パス (--add-dir 対象)
+    /** 再実行時に先頭へ差し込むディレクティブ (成果物ゼロ時の自動リトライ用) */
+    retryDirective?: string;
     
     // 後方互換用
     contextDir?: string;
@@ -230,6 +239,8 @@ export function runSpawnAgentDetailed(
         env: NodeJS.ProcessEnv;
         onStdoutChunk?: (chunk: string) => void;
         abortSignal?: AbortSignal;
+        /** stdin へ流し込む本文。argv 長制限(ARG_MAX)を避けるため巨大プロンプトはこちらを使う */
+        stdinInput?: string;
     }
 ): Promise<SpawnDetailedResult> {
     return new Promise((resolve, reject) => {
@@ -247,7 +258,19 @@ export function runSpawnAgentDetailed(
             shell: process.platform === 'win32'
         });
 
-        // 対話型入力待ちによるハング防止のため、stdin を即時クローズ
+        // stdin にプロンプト本文を流し込み、必ずクローズする。
+        // (クローズしないと CLI が対話入力待ちでハングする)
+        child.stdin?.on('error', (e) => {
+            // 相手プロセスが先に終了した場合の EPIPE 等を握りつぶす
+            console.warn('[runSpawnAgent] stdin error (ignored):', e);
+        });
+        try {
+            if (options.stdinInput) {
+                child.stdin?.write(options.stdinInput, 'utf-8');
+            }
+        } catch (e) {
+            console.error('[runSpawnAgent] Failed to write stdin:', e);
+        }
         child.stdin?.end();
 
         let stdoutBuffer = '';
@@ -325,155 +348,141 @@ export async function runSpawnAgent(
 }
 
 /**
- * 直接ファイル編集モデル用プロンプトの構築ヘルパー
+ * ノートブックフォルダをプロジェクト化し、cwd 外の読み取り対象ディレクトリを返す。
+ * 各アダプタは CLI 実行前にこれを呼ぶ。
  */
-export function buildDirectEditSystemPrompt(userPrompt: string, options: AgentOptions): string {
+export function prepareNotebookProject(options: AgentOptions): NotebookProjectResult {
+    const notebookDir = options.notebookDir || options.contextDir || process.cwd();
+    return ensureNotebookProject({
+        notebookDir,
+        sourcesDir: options.sourcesDir || path.join(notebookDir, 'sources'),
+        artifactsDir: options.artifactsDir || path.join(notebookDir, 'artifacts'),
+        notebookTitle: options.notebookTitle,
+        notebookDescription: options.notebookDescription,
+        linkedContexts: options.linkedContexts,
+        boundFolderPath: options.boundFolderPath,
+        boundFolderTreeText: options.boundFolderTreeText,
+        boundMmChannels: options.boundMmChannels
+    });
+}
+
+/**
+ * L0 + L1: システムプロンプト（--append-system-prompt へ渡す）
+ *
+ * 行動契約とパス情報のみ。ファイル一覧・参照コンテキスト・外部フォルダツリーは
+ * ノートブック直下の CLAUDE.md に永続化済みで、CLI が自動で読み込む。
+ */
+export function buildAgentSystemPrompt(options: AgentOptions): string {
     const notebookDir = options.notebookDir || options.contextDir || process.cwd();
     const sourcesDir = options.sourcesDir || path.join(notebookDir, 'sources');
     const artifactsDir = options.artifactsDir || path.join(notebookDir, 'artifacts');
 
-    let prompt = `あなたは高品質な技術・業務ドキュメントの作成およびレビューを自律的に行うエキスパートAIエージェントです。\n\n`;
-    prompt += `【現在の作業環境とディレクトリの絶対パス】\n`;
+    let prompt = `${AGENT_CHARTER}\n\n`;
+    prompt += `# 作業環境\n`;
     prompt += `- カレント作業ディレクトリ (cwd): "${notebookDir}"\n`;
-    prompt += `- インプットフォルダ (sources/): "${sourcesDir}"\n`;
-    prompt += `- 成果物フォルダ (artifacts/): "${artifactsDir}"\n\n`;
+    prompt += `- インプットフォルダ: "${sourcesDir}"\n`;
+    prompt += `- 成果物フォルダ: "${artifactsDir}"\n`;
+    prompt += `- このノートブックの構造・インプット一覧・参照コンテキストは、cwd 直下の CLAUDE.md に記載されています。\n`;
+    prompt += `  必要なファイルは Read / Glob 等のツールで直接読み込んでください。\n`;
 
-    // 1. sources/ 内のファイル一覧
-    prompt += `【インプットソースファイル一覧 (sources/)】\n`;
-    if (fs.existsSync(sourcesDir)) {
-        try {
-            const sourceFiles = fs.readdirSync(sourcesDir);
-            if (sourceFiles.length > 0) {
-                for (const file of sourceFiles) {
-                    const filePath = path.join(sourcesDir, file);
-                    try {
-                        const stat = fs.statSync(filePath);
-                        if (stat.isFile()) {
-                            prompt += `- sources/${file} (${stat.size} bytes, パス: "${filePath}")\n`;
-                        }
-                    } catch (e) {
-                        prompt += `- sources/${file}\n`;
-                    }
-                }
-                prompt += `※インプットファイルの内容が必要な場合は、ツールを使って上記ファイルを直接読み込んでください。\n\n`;
-            } else {
-                prompt += `(現在投入されているインプットソースファイルはありません)\n\n`;
-            }
-        } catch (e) {
-            prompt += `(ソースフォルダの読み込みに失敗しました)\n\n`;
-        }
-    } else {
-        prompt += `(sources フォルダが存在しません)\n\n`;
-    }
-
-    // 2. artifacts/ 内の既存成果物一覧
-    prompt += `【既存の成果物一覧 (artifacts/)】\n`;
-    if (fs.existsSync(artifactsDir)) {
-        try {
-            const artifactFiles = fs.readdirSync(artifactsDir);
-            if (artifactFiles.length > 0) {
-                for (const file of artifactFiles) {
-                    const filePath = path.join(artifactsDir, file);
-                    try {
-                        const stat = fs.statSync(filePath);
-                        if (stat.isFile()) {
-                            prompt += `- artifacts/${file} (${stat.size} bytes, パス: "${filePath}", 更新: ${new Date(stat.mtime).toISOString()})\n`;
-                        }
-                    } catch (e) {
-                        prompt += `- artifacts/${file}\n`;
-                    }
-                }
-                prompt += `※既存成果物を更新・追記・レビューする場合は、上記ファイルを読み込んで内容を確認し、ツールで直接編集してください。\n\n`;
-            } else {
-                prompt += `(現在作成されている成果物はありません。指示に応じて "${artifactsDir}" 配下に新規作成してください)\n\n`;
-            }
-        } catch (e) {
-            prompt += `(成果物フォルダの読み込みに失敗しました)\n\n`;
-        }
-    } else {
-        prompt += `(artifacts フォルダが存在しません)\n\n`;
-    }
-
-    // 3. リンクされた参照コンテキスト (Linked Notebooks)
-    if (options.linkedContexts && options.linkedContexts.length > 0) {
-        prompt += `【参照コンテキスト（Linked Notebooks / 知識・ルール・過去サンプル）】\n`;
-        prompt += `以下はこのタスクに関連付けられた別のノートブックの成果物一覧（システム仕様、ドキュメントルール、高品質サンプル等）です。\n`;
-        prompt += `※必要に応じて、ツール（view_file / Read File / cat 等）を使って以下の絶対パスのファイルを直接読み込み、用語・章立て・注意点・過去トラブル教訓を把握した上でドキュメント生成やレビューに反映してください。\n\n`;
-
-        for (const ctx of options.linkedContexts) {
-            prompt += `### 📘 参照ノートブック: "${ctx.notebookTitle}"\n`;
-            if (ctx.description) {
-                prompt += `- 説明: ${ctx.description}\n`;
-            }
-            if (ctx.artifacts.length > 0) {
-                prompt += `- 参照可能成果物一覧:\n`;
-                for (const art of ctx.artifacts) {
-                    const filePath = art.absolutePath || art.path;
-                    const sizeStr = art.size !== undefined ? ` (${art.size} bytes)` : '';
-                    prompt += `  * 成果物: "${art.title}" (${art.name})${sizeStr}\n    絶対パス: "${filePath}"\n`;
-                    if (art.content && !art.absolutePath) {
-                        prompt += `    --- 内容 ---\n${art.content}\n    --- 終了 ---\n`;
-                    }
-                }
-            } else {
-                prompt += `- (この参照ノートブックにはまだ成果物がありません)\n`;
-            }
-            prompt += `\n`;
-        }
-    }
-
-    // 4. バインドされた外部フォルダ資産のツリー概要 (AI探索・推薦用)
-    if (options.boundFolderTreeText) {
-        prompt += `【バインドされた外部共有フォルダ資産 (読み取り専用・探索用)】\n`;
-        prompt += `このノートブックには企業のファイルサーバーまたは共有フォルダが接続されています。以下のツリーは利用可能な外部ドキュメント一覧です。\n`;
-        prompt += `ユーザーから「〇〇の過去見積を探して」「〇〇に関する資料を教えて」などと探索・提案を求められた場合は、以下のフォルダツリーから該当する候補（相対フォルダ・ファイル名）を探索し、ユーザーにわかりやすく提示・推薦してください。\n\n`;
-        prompt += `--- 外部フォルダツリー概要 ---\n`;
-        prompt += `${options.boundFolderTreeText}\n`;
-        prompt += `--- 外部フォルダツリーここまで ---\n\n`;
-    }
-
-    // 4.5. バインドされた社内チャット (Mattermost) チャンネル
-    if (options.boundMmChannels && options.boundMmChannels.length > 0) {
-        prompt += `【連携された社内チャット (Mattermost) チャンネル】\n`;
-        prompt += `このノートブックには以下の社内チャット（Mattermost）チャンネルのログがインプットとして同期されています。\n`;
-        for (const ch of options.boundMmChannels) {
-            const fileName = ch.sourceFileName || `mattermost_${ch.channelName}.md`;
-            prompt += `- 🏢 [${ch.teamName}] #${ch.displayName || ch.channelName} (ファイル: sources/${fileName}, 最終同期: ${ch.lastSyncedAt || '未同期'})\n`;
-        }
-        prompt += `※チャットでの直近のやり取りや過去ログの内容・決定事項・課題を把握してドキュメント作成・更新を行う場合は、上記ファイルを view_file ツール等で直接確認して反映してください。\n\n`;
-    }
-
-    // 5. 後方互換ドメイン知識・テンプレート
+    // 後方互換: 明示的に注入されたドメイン知識・テンプレート
     if (options.systemKnowledgeContent) {
-        prompt += `【ドメイン・システム知識 (${options.systemKnowledgeName || 'システム仕様'})】\n`;
-        prompt += `--- 開始: システム知識 ---\n${options.systemKnowledgeContent}\n--- 終了: システム知識 ---\n\n`;
+        prompt += `\n# ドメイン・システム知識 (${options.systemKnowledgeName || 'システム仕様'})\n`;
+        prompt += `${options.systemKnowledgeContent}\n`;
     }
     if (options.templateContent) {
-        prompt += `【ドキュメントフォーマット・作成基準 (${options.templateTitle || '指定テンプレート'})】\n`;
-        prompt += `--- 開始: テンプレート ---\n${options.templateContent}\n--- 終了: テンプレート ---\n\n`;
+        prompt += `\n# ドキュメントフォーマット・作成基準 (${options.templateTitle || '指定テンプレート'})\n`;
+        prompt += `${options.templateContent}\n`;
     }
 
-    // 6. 対話履歴
+    return prompt;
+}
+
+/**
+ * L4: ユーザーターン（stdin へ渡す）
+ * 対話履歴と今回の指示のみ。ルールを混ぜないことで指示が希釈されるのを防ぐ。
+ */
+export function buildUserTurn(userPrompt: string, options: AgentOptions): string {
+    let turn = '';
+
+    if (options.retryDirective) {
+        turn += `${options.retryDirective}\n`;
+    }
+
     if (options.chatHistory && options.chatHistory.length > 0) {
         const validHistory = options.chatHistory.filter(m => m.text && !m.text.startsWith('思考中...'));
         if (validHistory.length > 0) {
-            prompt += `【これまでの対話履歴（セッションの文脈）】\n`;
-            const recentHistory = validHistory.slice(-15);
-            for (const msg of recentHistory) {
+            turn += `【これまでの対話履歴（セッションの文脈）】\n`;
+            for (const msg of validHistory.slice(-15)) {
                 const senderLabel = msg.sender === 'user' ? 'ユーザー' : 'AI';
-                prompt += `${senderLabel}: ${msg.text}\n\n`;
+                turn += `${senderLabel}: ${msg.text}\n\n`;
             }
-            prompt += `--- 対話履歴ここまで ---\n\n`;
+            turn += `--- 対話履歴ここまで ---\n\n`;
         }
     }
 
-    // 6. ユーザー指示と行動ルール
-    prompt += `【今回のユーザー指示】\n${userPrompt}\n\n`;
-    prompt += `【最重要行動ガイドライン（厳守）】\n`;
-    prompt += `1. **必ずファイル作成/編集ツールを実行すること**: テキストやマークダウンコードブロックを出力するだけではファイルは保存されません。必ずファイル作成/編集ツール（write_to_file, edit_file 等）を実行し、実体ファイルとして "${artifactsDir}/<ファイル名>.md"（またはカレントディレクトリからの相対パス "artifacts/<ファイル名>.md"）に直接書き込んでください。\n`;
-    prompt += `2. **段階的編集と既存記述の維持**: 既存の成果物を編集・追記する場合、人間が手作業で修正した箇所や既存の章を勝手に削除・全置換せず、指示されたセクションや章のみを的確に追加・修正してください。\n`;
-    prompt += `3. **レビュー指示の実行**: レビューが指示された場合は、リンクされた参照ノートブックのルール・観点に照らし、指摘結果を "${artifactsDir}/review_<対象名>_YYYYMMDD.md" に直接ファイル出力してください（章 / 観点 / 指摘内容 / 対応状況 を含めること）。\n`;
-    prompt += `4. **完了報告**: 処理完了後、どの成果物をどのように作成・編集したかの要約をユーザーへわかりやすく回答してください。\n`;
+    turn += `【今回のユーザー指示】\n${userPrompt}\n`;
+    return turn;
+}
 
-    return prompt;
+/**
+ * 単一プロンプトしか受け付けない CLI 向けの結合版（後方互換）。
+ * システムプロンプト分離に対応していないエージェントでは、CLAUDE.md の内容も
+ * インラインで同梱して同等の文脈を与える。
+ */
+export function buildDirectEditSystemPrompt(userPrompt: string, options: AgentOptions): string {
+    const notebookDir = options.notebookDir || options.contextDir || process.cwd();
+    const projectContext = buildClaudeMdContent({
+        notebookDir,
+        sourcesDir: options.sourcesDir || path.join(notebookDir, 'sources'),
+        artifactsDir: options.artifactsDir || path.join(notebookDir, 'artifacts'),
+        notebookTitle: options.notebookTitle,
+        notebookDescription: options.notebookDescription,
+        linkedContexts: options.linkedContexts,
+        boundFolderPath: options.boundFolderPath,
+        boundFolderTreeText: options.boundFolderTreeText,
+        boundMmChannels: options.boundMmChannels
+    });
+
+    return `${buildAgentSystemPrompt(options)}\n${projectContext}\n${buildUserTurn(userPrompt, options)}`;
+}
+
+/**
+ * CLI が対応しているオプションを --help から検出してキャッシュする。
+ *
+ * Claude Code / Antigravity CLI はバージョンによって利用可能なフラグが異なるため、
+ * 未対応フラグを渡して起動失敗する事故を防ぐ。検出できなかった場合は
+ * 「最小限の引数のみ」に安全側で倒す。
+ */
+const supportedFlagCache = new Map<string, Set<string>>();
+
+export async function detectSupportedFlags(exePath: string, env: NodeJS.ProcessEnv): Promise<Set<string>> {
+    const cached = supportedFlagCache.get(exePath);
+    if (cached) return cached;
+
+    const flags = new Set<string>();
+    try {
+        const { stdout, stderr } = await execAsync(`"${exePath}" --help`, {
+            env,
+            timeout: 15000,
+            maxBuffer: 4 * 1024 * 1024
+        });
+        const helpText = `${stdout || ''}\n${stderr || ''}`;
+        const re = /--[a-zA-Z0-9][a-zA-Z0-9-]*/g;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(helpText)) !== null) {
+            flags.add(m[0]);
+        }
+        console.log(`[detectSupportedFlags] ${exePath}: ${flags.size} flags detected`);
+    } catch (e) {
+        console.warn(`[detectSupportedFlags] Failed to read --help for ${exePath}. Falling back to minimal args.`, e);
+    }
+
+    supportedFlagCache.set(exePath, flags);
+    return flags;
+}
+
+/** テスト・設定変更時にフラグ検出キャッシュを破棄する */
+export function clearSupportedFlagCache(): void {
+    supportedFlagCache.clear();
 }
