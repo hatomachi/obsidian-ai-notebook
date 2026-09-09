@@ -10,10 +10,9 @@
    - Linked Context モデル（物理コピーではなく参照リンクによる動的コンテキスト結合）
 2. **[設計仕様書 (design-doc.md)](file:///Users/s-ikari/work/obsidian-ai-notebook/design-doc.md)**:
    - データ構造・ID命名規則・3カラムUI/UX・Agent Adapterの抽象化設計
-3. **[タスク管理チケット (TASK-021.md)](file:///Users/s-ikari/work/project/task-management/tickets/TASK-021.md)**:
-   - 全体タスク・進捗状況
-
-3. **[エージェント実行モデル (design-doc.md 第4章)](file:///Users/s-ikari/work/obsidian-ai-notebook/design-doc.md)**:
+3. **[プロダクト作戦ノート & Next Actions (personal-vault)](file:///Users/s-ikari/work/personal-vault/10_%E8%81%B7%E4%BA%BA%E3%83%BB%E7%99%BA%E6%98%8E%E5%AE%B6/obsidian-ai-notebook.md)**:
+   - 全体ビジョン、現在地、ユーザーからの日常フィードバック、直近の Next Actions（実装着手・完了時は必ず確認・更新すること）
+4. **[エージェント実行モデル (design-doc.md 第4章)](file:///Users/s-ikari/work/obsidian-ai-notebook/design-doc.md)**:
    - 薄いラッパー原則、`--permission-mode` / `--resume` / `stream-json` の使い方、**過去に撤去したアンチパターン一覧**
 
 ---
