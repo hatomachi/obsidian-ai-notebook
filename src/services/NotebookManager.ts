@@ -6,6 +6,7 @@ import { ImageCompressor } from './ImageCompressor';
 import { GitLabService } from './GitLabService';
 import { DebugFolderHelper } from '../utils/debugFolderHelper';
 import * as path from 'path';
+import * as fs from 'fs';
 
 export class NotebookManager {
     app: App;
@@ -1031,6 +1032,19 @@ uploaded_at: "${new Date().toISOString()}"
 
                 const savedFile = await this.safeCreateOrModify(mdPath, imageMarkdown);
 
+                // 方針A: ローカルキャッシュ（.gitignore対象の sources/.cache/images/）にも即座に保存（AI視覚認識用）
+                try {
+                    await this.saveImageToCache(id, targetFilename, compResult.data);
+                    DebugFolderHelper.logPipelineStep(
+                        fileName,
+                        6,
+                        'Cache-Save',
+                        `ローカルキャッシュ保存完了 (AI視覚認識用): sources/.cache/images/${targetFilename}`
+                    );
+                } catch (cacheErr: any) {
+                    console.warn(`[AI Notebook] 画像キャッシュの保存に失敗しました（動作には影響ありません）:`, cacheErr);
+                }
+
                 // origin に GitLab Upload 情報を保存
                 const originInfo: SourceOrigin = {
                     connectorId: 'gitlab_upload',
@@ -1790,5 +1804,189 @@ uploaded_at: "${new Date().toISOString()}"
         }
         return results;
     }
+
+    /**
+     * Vault の絶対パスを取得（デスクトップ環境用）
+     */
+    getVaultBasePath(): string {
+        const adapter = this.app.vault.adapter;
+        if (adapter instanceof FileSystemAdapter) {
+            return adapter.getBasePath();
+        }
+        return '';
+    }
+
+    /**
+     * 画像ローカルキャッシュのパス情報を取得
+     */
+    getImageCachePath(notebookId: string, filename: string): { relativePath: string; absolutePath: string } {
+        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sources`);
+        const relativePath = normalizePath(`${sourcesDir}/.cache/images/${filename}`);
+        const vaultBasePath = this.getVaultBasePath();
+        const absolutePath = vaultBasePath ? path.join(vaultBasePath, relativePath) : '';
+        return { relativePath, absolutePath };
+    }
+
+    /**
+     * 画像がローカルキャッシュ（sources/.cache/images/）に存在するか判定
+     */
+    isImageCached(notebookId: string, filename: string): boolean {
+        const { absolutePath } = this.getImageCachePath(notebookId, filename);
+        if (!absolutePath) return false;
+        try {
+            return fs.existsSync(absolutePath);
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * WebP画像をローカルキャッシュ（sources/.cache/images/）に保存し、.gitignore を確保する
+     */
+    async saveImageToCache(notebookId: string, filename: string, data: ArrayBuffer): Promise<string> {
+        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sources`);
+        const cacheDir = normalizePath(`${sourcesDir}/.cache`);
+        const imagesDir = normalizePath(`${cacheDir}/images`);
+
+        // 1. Vault 側のフォルダ構造を確保
+        await this.ensureFolder(cacheDir);
+        await this.ensureFolder(imagesDir);
+
+        const vaultBasePath = this.getVaultBasePath();
+        if (vaultBasePath) {
+            const cacheDirAbs = path.join(vaultBasePath, cacheDir);
+            const imagesDirAbs = path.join(vaultBasePath, imagesDir);
+            if (!fs.existsSync(imagesDirAbs)) {
+                fs.mkdirSync(imagesDirAbs, { recursive: true });
+            }
+
+            // 2. sources/.cache/.gitignore を作成し、Git 追跡を完全防止
+            const gitignorePath = path.join(cacheDirAbs, '.gitignore');
+            if (!fs.existsSync(gitignorePath)) {
+                fs.writeFileSync(gitignorePath, "# AI Notebook local cache (ignored by Git)\n*\n!.gitignore\n", 'utf-8');
+            }
+
+            // 3. 画像バイナリを書き込み
+            const targetAbs = path.join(imagesDirAbs, filename);
+            await fs.promises.writeFile(targetAbs, Buffer.from(data));
+            return targetAbs;
+        } else {
+            // モバイル環境等で FileSystemAdapter が取れない場合のフォールバック
+            const targetRel = normalizePath(`${imagesDir}/${filename}`);
+            await this.safeCreateOrModifyBinary(targetRel, data);
+            return targetRel;
+        }
+    }
+
+    /**
+     * ノートブック内のオフロード画像について、ローカルキャッシュが未作成のものを GitLab から自動ダウンロードして復元する
+     */
+    async ensureImageCache(notebookId: string): Promise<{ restored: string[]; failed: string[] }> {
+        const result = {
+            restored: [] as string[],
+            failed: [] as string[]
+        };
+
+        if (!this.gitlabService) {
+            return result;
+        }
+
+        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sources`);
+        const vaultBasePath = this.getVaultBasePath();
+        const sourcesDirAbs = vaultBasePath ? path.join(vaultBasePath, sourcesDir) : '';
+
+        // sources ディレクトリが存在しない場合はスキップ
+        if (sourcesDirAbs && !fs.existsSync(sourcesDirAbs)) {
+            return result;
+        }
+
+        // sources ディレクトリ配下の .webp.md などのメタデータファイルをスキャン
+        let files: string[] = [];
+        try {
+            if (sourcesDirAbs && fs.existsSync(sourcesDirAbs)) {
+                files = fs.readdirSync(sourcesDirAbs);
+            }
+        } catch (readErr) {
+            console.warn(`[AI Notebook] Failed to read sources directory for image cache check:`, readErr);
+            return result;
+        }
+
+        for (const file of files) {
+            // .cache などの隠しフォルダや通常ファイル以外の除外
+            if (file.startsWith('.')) continue;
+
+            // .webp.md または .md ファイルを対象とする
+            if (!file.endsWith('.md')) continue;
+
+            const filePathAbs = path.join(sourcesDirAbs, file);
+            let content = '';
+            try {
+                content = fs.readFileSync(filePathAbs, 'utf-8');
+            } catch {
+                continue;
+            }
+
+            // frontmatter の解析
+            if (!content.startsWith('---')) continue;
+            const fmEnd = content.indexOf('\n---', 3);
+            if (fmEnd === -1) continue;
+            const fmText = content.slice(3, fmEnd);
+
+            let type = '';
+            let webpName = '';
+            let gitlabUrl = '';
+
+            const typeMatch = fmText.match(/type:\s*["']?([^"'\r\n]+)["']?/);
+            if (typeMatch) type = typeMatch[1].trim();
+
+            const webpMatch = fmText.match(/webp_name:\s*["']?([^"'\r\n]+)["']?/);
+            if (webpMatch) webpName = webpMatch[1].trim();
+
+            const urlMatch = fmText.match(/gitlab_url:\s*["']?([^"'\r\n]+)["']?/);
+            if (urlMatch) gitlabUrl = urlMatch[1].trim();
+
+            // gitlab_image 型または GitLab URL があるものを対象
+            if (type !== 'gitlab_image' && !gitlabUrl) continue;
+            if (!gitlabUrl) continue;
+
+            if (!webpName) {
+                // ファイル名から推測（例: sample.webp.md -> sample.webp）
+                webpName = file.replace(/\.md$/, '');
+            }
+
+            // キャッシュが既に存在していればスキップ
+            if (this.isImageCached(notebookId, webpName)) {
+                continue;
+            }
+
+            // GitLab Projects Uploads API からダウンロードして復元
+            try {
+                DebugFolderHelper.logPipelineStep(
+                    webpName,
+                    6,
+                    'Restore-Cache',
+                    `GitLab Uploads から画像キャッシュをオンデマンド復元中... (${gitlabUrl})`
+                );
+
+                const server = this.gitlabService.getServerForUrl(gitlabUrl);
+                const buffer = await this.gitlabService.downloadFile(gitlabUrl, server?.id);
+                await this.saveImageToCache(notebookId, webpName, buffer);
+
+                result.restored.push(webpName);
+                DebugFolderHelper.logPipelineStep(
+                    webpName,
+                    6,
+                    'Restore-Cache',
+                    `画像キャッシュ復元完了: sources/.cache/images/${webpName}`
+                );
+            } catch (dlErr: any) {
+                console.warn(`[AI Notebook] ⚠️ 画像キャッシュの自動復元に失敗しました (${webpName}):`, dlErr?.message || dlErr);
+                result.failed.push(webpName);
+            }
+        }
+
+        return result;
+    }
 }
+
 

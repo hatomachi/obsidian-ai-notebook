@@ -2,6 +2,7 @@ import { App, Modal, setIcon, TFile, Notice } from 'obsidian';
 import type AINotebookPlugin from '../../main';
 import { NotebookSource } from '../../types';
 import { DebugFolderHelper } from '../../utils/debugFolderHelper';
+import * as fs from 'fs';
 
 export class ImagePreviewModal extends Modal {
     plugin: AINotebookPlugin;
@@ -53,9 +54,31 @@ export class ImagePreviewModal extends Modal {
 
         // 5. 画像の取得と表示
         try {
-            let displayUrl = this.imageUrl;
-            if (this.imageUrl && this.plugin.gitlabService.isGitLabUploadUrl(this.imageUrl)) {
+            let displayUrl = '';
+
+            // ノートブックIDの特定
+            const nbMatch = this.source.path.match(/notebooks\/([^/]+)\/sources/);
+            const notebookId = nbMatch ? nbMatch[1] : '';
+
+            // 5-a. ローカルキャッシュ（sources/.cache/images/<webpName>）が存在すれば最優先で高速表示
+            if (notebookId && this.webpName && this.plugin.notebookManager.isImageCached(notebookId, this.webpName)) {
+                const { absolutePath } = this.plugin.notebookManager.getImageCachePath(notebookId, this.webpName);
+                if (absolutePath && fs.existsSync(absolutePath)) {
+                    const fileBuf = fs.readFileSync(absolutePath);
+                    const blob = new Blob([fileBuf], { type: 'image/webp' });
+                    displayUrl = URL.createObjectURL(blob);
+                }
+            }
+
+            // 5-b. キャッシュに無ければ GitLab API からオンデマンド取得
+            if (!displayUrl && this.imageUrl && this.plugin.gitlabService?.isGitLabUploadUrl(this.imageUrl)) {
                 displayUrl = await this.plugin.gitlabService.getAuthenticatedImageUrl(this.imageUrl);
+                // バックグラウンドでローカルキャッシュにも保存
+                if (notebookId && this.webpName) {
+                    this.plugin.gitlabService.downloadFile(this.imageUrl)
+                        .then(buf => this.plugin.notebookManager.saveImageToCache(notebookId, this.webpName, buf))
+                        .catch(cErr => console.warn('[AI Notebook] Image cache save in modal failed:', cErr));
+                }
             } else if (!displayUrl) {
                 // ローカルに原本がある場合
                 const localFile = this.app.vault.getAbstractFileByPath(this.source.path);
@@ -136,6 +159,9 @@ export class ImagePreviewModal extends Modal {
                     const origMatch = yamlText.match(/original_name:\s*["']?([^\r\n"']+)["']?/);
                     if (origMatch) this.originalName = origMatch[1].trim();
 
+                    const webpMatch = yamlText.match(/webp_name:\s*["']?([^\r\n"']+)["']?/);
+                    if (webpMatch) this.webpName = webpMatch[1].trim();
+
                     const origSizeMatch = yamlText.match(/original_size:\s*(\d+)/);
                     if (origSizeMatch) this.originalSize = parseInt(origSizeMatch[1], 10);
 
@@ -154,6 +180,10 @@ export class ImagePreviewModal extends Modal {
             } catch (e) {
                 console.warn('Failed to parse metadata from markdown:', e);
             }
+        }
+
+        if (!this.webpName && this.source.name) {
+            this.webpName = this.source.name.replace(/\.md$/, '');
         }
     }
 }

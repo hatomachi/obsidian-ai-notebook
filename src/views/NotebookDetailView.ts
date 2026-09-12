@@ -120,6 +120,13 @@ export class AINotebookDetailView extends ItemView {
         }
 
         this.render();
+
+        // バックグラウンドで画像キャッシュのオンデマンド保証を実行（UI描画を妨げない）
+        if (this.notebookId) {
+            this.plugin.notebookManager.ensureImageCache(this.notebookId).catch(err => {
+                console.warn('[AI Notebook] Background image cache check failed:', err);
+            });
+        }
     }
 
     render(): void {
@@ -1291,6 +1298,13 @@ export class AINotebookDetailView extends ItemView {
                         : streamedOutput;
                 }
             };
+
+            // 方針A: エージェント実行前に、GitLabオフロード画像のローカルキャッシュをオンデマンド保証
+            try {
+                await this.plugin.notebookManager.ensureImageCache(this.notebookId);
+            } catch (cacheErr) {
+                console.warn('[AI Notebook] Failed to ensure image cache before agent prompt:', cacheErr);
+            }
 
             // 3. AI エージェントの実行 (ノートブックルートを作業ディレクトリとして渡す)
             const result = await agentAdapter.executePrompt(userPrompt, {

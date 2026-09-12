@@ -43,6 +43,7 @@ function listFilesWithSize(dir: string): string[] {
     if (!fs.existsSync(dir)) return lines;
     try {
         for (const file of fs.readdirSync(dir)) {
+            if (file.startsWith('.')) continue;
             const filePath = path.join(dir, file);
             try {
                 const stat = fs.statSync(filePath);
@@ -57,6 +58,87 @@ function listFilesWithSize(dir: string): string[] {
         // ignore
     }
     return lines;
+}
+
+interface CachedImageInfo {
+    webpName: string;
+    originalName?: string;
+    metaFileName?: string;
+    size?: number;
+    existsInCache: boolean;
+}
+
+function scanImageSources(sourcesDir: string): CachedImageInfo[] {
+    const images: Map<string, CachedImageInfo> = new Map();
+    const cacheImagesDir = path.join(sourcesDir, '.cache', 'images');
+
+    // 1. sources/ 直下の *.webp.md などのメタデータをスキャン
+    if (fs.existsSync(sourcesDir)) {
+        try {
+            for (const file of fs.readdirSync(sourcesDir)) {
+                if (!file.endsWith('.md')) continue;
+                const fullPath = path.join(sourcesDir, file);
+                try {
+                    const content = fs.readFileSync(fullPath, 'utf-8');
+                    if (content.startsWith('---')) {
+                        const fmEnd = content.indexOf('\n---', 3);
+                        if (fmEnd !== -1) {
+                            const fmText = content.slice(3, fmEnd);
+                            const typeMatch = fmText.match(/type:\s*["']?([^"'\r\n]+)["']?/);
+                            const urlMatch = fmText.match(/gitlab_url:\s*["']?([^"'\r\n]+)["']?/);
+                            if (typeMatch?.[1].trim() === 'gitlab_image' || urlMatch) {
+                                const origMatch = fmText.match(/original_name:\s*["']?([^"'\r\n]+)["']?/);
+                                const webpMatch = fmText.match(/webp_name:\s*["']?([^"'\r\n]+)["']?/);
+                                const webpName = webpMatch ? webpMatch[1].trim() : file.replace(/\.md$/, '');
+                                images.set(webpName, {
+                                    webpName,
+                                    originalName: origMatch ? origMatch[1].trim() : undefined,
+                                    metaFileName: file,
+                                    existsInCache: false
+                                });
+                            }
+                        }
+                    }
+                } catch {
+                    // ignore
+                }
+            }
+        } catch {
+            // ignore
+        }
+    }
+
+    // 2. sources/.cache/images/ を走査して実体ファイルの存在とサイズを確認
+    if (fs.existsSync(cacheImagesDir)) {
+        try {
+            for (const file of fs.readdirSync(cacheImagesDir)) {
+                if (file.startsWith('.')) continue;
+                const filePath = path.join(cacheImagesDir, file);
+                try {
+                    const stat = fs.statSync(filePath);
+                    if (stat.isFile()) {
+                        const existing = images.get(file);
+                        if (existing) {
+                            existing.existsInCache = true;
+                            existing.size = stat.size;
+                        } else {
+                            images.set(file, {
+                                webpName: file,
+                                existsInCache: true,
+                                size: stat.size
+                            });
+                        }
+                    }
+                } catch {
+                    // ignore
+                }
+            }
+        } catch {
+            // ignore
+        }
+    }
+
+    return Array.from(images.values());
 }
 
 /**
@@ -99,6 +181,20 @@ export function buildClaudeMdContent(input: NotebookProjectInput): string {
     md += sourceLines.length > 0
         ? `${sourceLines.join('\n')}\n\n※内容が必要なものは Read / Glob 等のツールで直接読み込むこと。\n\n`
         : `(現在インプットファイルはありません)\n\n`;
+
+    const cachedImages = scanImageSources(input.sourcesDir);
+    if (cachedImages.length > 0) {
+        md += `### 🖼️ 画像ソースのローカルキャッシュ (sources/.cache/images/)\n`;
+        md += `GitLab にオフロードされた画像の実体は、Git リポジトリ容量を消費しないようローカルキャッシュ \`sources/.cache/images/\` 配下に配置されています。\n`;
+        md += `Claude Code などのエージェントはマルチモーダル視覚認識に対応しています。画像の内容・図表・UIデザイン・画面キャプチャを視覚的に分析・確認する際は、以下のファイルを Read ツール等で直接読み込んでください：\n\n`;
+        for (const img of cachedImages) {
+            const origStr = img.originalName ? `原本: ${img.originalName}, ` : '';
+            const metaStr = img.metaFileName ? `メタデータ: \`sources/${img.metaFileName}\`` : '';
+            const sizeStr = img.size !== undefined ? ` (${img.size.toLocaleString()} bytes)` : '';
+            md += `- \`sources/.cache/images/${img.webpName}\`${sizeStr} (${origStr}${metaStr})\n`;
+        }
+        md += `\n`;
+    }
 
     const artifactLines = listFilesWithSize(input.artifactsDir);
     md += `## 既存の成果物 (artifacts/)\n`;
