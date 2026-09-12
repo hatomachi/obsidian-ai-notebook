@@ -26,8 +26,30 @@ export class Modal {
 }
 export class ItemView {}
 export class WorkspaceLeaf {}
-export function parseYaml(s: string): any { return {}; }
-export function stringifyYaml(o: any): string { return ''; }
+export function parseYaml(s: string): any {
+    const res: Record<string, any> = {};
+    if (!s) return res;
+    const lines = s.split('\n');
+    for (const line of lines) {
+        const match = line.match(/^([a-zA-Z0-9_\-]+)\s*:\s*(.*)$/);
+        if (match) {
+            let val: any = match[2].trim();
+            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+                val = val.slice(1, -1);
+            } else if (val.startsWith('[') && val.endsWith(']')) {
+                try { val = JSON.parse(val); } catch { val = []; }
+            }
+            res[match[1]] = val;
+        }
+    }
+    return res;
+}
+export function stringifyYaml(o: any): string {
+    if (!o) return '';
+    return Object.entries(o)
+        .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
+        .join('\n');
+}
 export function normalizePath(p: string): string { return p.replace(/\\/g, '/'); }
 
 let customPdfJsMock: any = null;

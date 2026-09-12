@@ -29,6 +29,18 @@ export class AINotebookSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
+        const detectedUsername = this.plugin.notebookManager?.getEffectiveUsername() || 'user';
+        new Setting(containerEl)
+            .setName('👤 ユーザー名 (縄張りID)')
+            .setDesc(`Git共有時の保存ディレクトリ（users/<username>/）として使用されます。未設定時はOSユーザー名（現在: ${detectedUsername}）が自動適用され、Git競合を構造的に100%防止します。`)
+            .addText(text => text
+                .setPlaceholder(detectedUsername)
+                .setValue(this.plugin.settings.userName || '')
+                .onChange(async (value) => {
+                    this.plugin.settings.userName = value.trim();
+                    await this.plugin.saveSettings();
+                }));
+
         new Setting(containerEl)
             .setName('アクティブ AI エージェント')
             .setDesc('使用するローカル CLI エージェントを選択します（antigravity CLI / claude CLI）')

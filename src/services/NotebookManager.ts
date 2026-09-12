@@ -7,11 +7,20 @@ import { GitLabService } from './GitLabService';
 import { DebugFolderHelper } from '../utils/debugFolderHelper';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
+
+export interface NotebookLocation {
+    notebookDir: string;      // 例: "_ainotebook/users/alice/notebooks/xxx" または "_ainotebook/notebooks/xxx"
+    indexPath: string;        // 例: "_ainotebook/users/alice/index/xxx.md" または "_ainotebook/index/xxx.md"
+    userName?: string;        // "alice" または undefined (レガシー/共有)
+    isLegacy: boolean;
+}
 
 export class NotebookManager {
     app: App;
     settings: AINotebookSettings;
     gitlabService?: GitLabService;
+    private locationCache: Map<string, NotebookLocation> = new Map();
 
     constructor(app: App, settings: AINotebookSettings, gitlabService?: GitLabService) {
         this.app = app;
@@ -20,16 +29,191 @@ export class NotebookManager {
     }
 
     /**
+     * 有効なユーザー名（縄張りID）を解決
+     */
+    getEffectiveUsername(): string {
+        if (this.settings.userName && this.settings.userName.trim()) {
+            return this.sanitizeUsername(this.settings.userName.trim());
+        }
+        try {
+            const envUser = process.env.USER || process.env.USERNAME;
+            if (envUser) return this.sanitizeUsername(envUser);
+            if (typeof os !== 'undefined' && typeof os.userInfo === 'function') {
+                const userInfo = os.userInfo();
+                if (userInfo && userInfo.username) {
+                    return this.sanitizeUsername(userInfo.username);
+                }
+            }
+        } catch (e) {
+            // モバイルやサンドボックス環境でのフォールバック
+        }
+        return 'default_user';
+    }
+
+    /**
+     * フォルダ名として安全な英数字・アンダースコア・ハイフンにクレンジング
+     */
+    sanitizeUsername(username: string): string {
+        const cleaned = username.replace(/[^a-zA-Z0-9._-]/g, '_').toLowerCase();
+        return cleaned || 'user';
+    }
+
+    /**
+     * ノートブックの配置ロケーション（縄張りまたはレガシー領域）を解決
+     */
+    async resolveNotebookLocation(id: string): Promise<NotebookLocation> {
+        const cached = this.locationCache.get(id);
+        if (cached && this.app.vault.getAbstractFileByPath(cached.indexPath)) {
+            return cached;
+        }
+
+        const root = normalizePath(this.settings.rootDir);
+        const currentUser = this.getEffectiveUsername();
+        const vaultBasePath = this.getVaultBasePath();
+
+        // フォルダ・ファイルの存在確認（Vaultキャッシュ＋ファイルシステム直接確認）
+        const pathExists = (relPath: string): boolean => {
+            if (this.app.vault.getAbstractFileByPath(relPath)) return true;
+            if (vaultBasePath) {
+                try {
+                    return fs.existsSync(path.join(vaultBasePath, relPath));
+                } catch {
+                    return false;
+                }
+            }
+            return false;
+        };
+
+        // 1. カレントユーザーの縄張り内をチェック
+        const myIndexPath = normalizePath(`${root}/users/${currentUser}/index/${id}.md`);
+        const myDir = normalizePath(`${root}/users/${currentUser}/notebooks/${id}`);
+        if (pathExists(myIndexPath) || pathExists(myDir)) {
+            const loc: NotebookLocation = {
+                notebookDir: myDir,
+                indexPath: myIndexPath,
+                userName: currentUser,
+                isLegacy: false
+            };
+            this.locationCache.set(id, loc);
+            return loc;
+        }
+
+        // 2. 他の全ユーザーの縄張り内（users/*/）をチェック
+        const usersDirRel = normalizePath(`${root}/users`);
+        let userDirs: string[] = [];
+        const usersFolder = this.app.vault.getAbstractFileByPath(usersDirRel);
+        if (usersFolder instanceof TFolder) {
+            userDirs = usersFolder.children.filter(c => c instanceof TFolder).map(c => c.name);
+        } else if (vaultBasePath) {
+            try {
+                const usersDirAbs = path.join(vaultBasePath, usersDirRel);
+                if (fs.existsSync(usersDirAbs)) {
+                    userDirs = fs.readdirSync(usersDirAbs).filter(name => {
+                        try { return fs.statSync(path.join(usersDirAbs, name)).isDirectory(); } catch { return false; }
+                    });
+                }
+            } catch {}
+        }
+
+        for (const uName of userDirs) {
+            const uIndexPath = normalizePath(`${root}/users/${uName}/index/${id}.md`);
+            const uDir = normalizePath(`${root}/users/${uName}/notebooks/${id}`);
+            if (pathExists(uIndexPath) || pathExists(uDir)) {
+                const loc: NotebookLocation = {
+                    notebookDir: uDir,
+                    indexPath: uIndexPath,
+                    userName: uName,
+                    isLegacy: false
+                };
+                this.locationCache.set(id, loc);
+                return loc;
+            }
+        }
+
+        // 3. レガシー・共通共有領域（_ainotebook/notebooks/<id> または index/<id>.md）をチェック
+        const legacyIndexPath = normalizePath(`${root}/index/${id}.md`);
+        const legacyDir = normalizePath(`${root}/notebooks/${id}`);
+        if (pathExists(legacyIndexPath) || pathExists(legacyDir)) {
+            const loc: NotebookLocation = {
+                notebookDir: legacyDir,
+                indexPath: legacyIndexPath,
+                userName: undefined,
+                isLegacy: true
+            };
+            this.locationCache.set(id, loc);
+            return loc;
+        }
+
+        // 4. 新規等で見つからない場合の既定（カレントユーザーの縄張り）
+        const defaultLoc: NotebookLocation = {
+            notebookDir: myDir,
+            indexPath: myIndexPath,
+            userName: currentUser,
+            isLegacy: false
+        };
+        return defaultLoc;
+    }
+
+    /**
+     * ノートブックの実体ディレクトリパスを取得
+     */
+    async getNotebookDir(id: string): Promise<string> {
+        const loc = await this.resolveNotebookLocation(id);
+        return loc.notebookDir;
+    }
+
+    /**
+     * ノートブックのインデックスファイルパスを取得
+     */
+    async getNotebookIndexPath(id: string): Promise<string> {
+        const loc = await this.resolveNotebookLocation(id);
+        return loc.indexPath;
+    }
+
+    /**
+     * ノートブックの sources フォルダパスを取得
+     */
+    async getSourcesDir(id: string): Promise<string> {
+        const dir = await this.getNotebookDir(id);
+        return normalizePath(`${dir}/sources`);
+    }
+
+    /**
+     * ノートブックの artifacts フォルダパスを取得
+     */
+    async getArtifactsDir(id: string): Promise<string> {
+        const dir = await this.getNotebookDir(id);
+        return normalizePath(`${dir}/artifacts`);
+    }
+
+    /**
+     * ノートブックの sessions フォルダパスを取得
+     */
+    async getSessionsDir(id: string): Promise<string> {
+        const dir = await this.getNotebookDir(id);
+        return normalizePath(`${dir}/sessions`);
+    }
+
+    /**
      * ルート保存フォルダおよびサブフォルダが存在することを確認・作成
      */
     async ensureBaseDirectories(): Promise<void> {
         const root = normalizePath(this.settings.rootDir);
+        const currentUser = this.getEffectiveUsername();
+        const userBase = normalizePath(`${root}/users/${currentUser}`);
+
+        await this.ensureFolder(root);
+        await this.ensureFolder(normalizePath(`${root}/users`));
+        await this.ensureFolder(userBase);
+        await this.ensureFolder(normalizePath(`${userBase}/index`));
+        await this.ensureFolder(normalizePath(`${userBase}/notebooks`));
+
+        // 既存レガシー・共通領域も確保
         const indexDir = normalizePath(`${root}/index`);
         const notebooksDir = normalizePath(`${root}/notebooks`);
         const systemsDir = normalizePath(`${root}/systems`);
         const templatesDir = normalizePath(`${root}/templates`);
 
-        await this.ensureFolder(root);
         await this.ensureFolder(indexDir);
         await this.ensureFolder(notebooksDir);
         await this.ensureFolder(systemsDir);
@@ -373,7 +557,7 @@ export class NotebookManager {
     }
 
     /**
-     * 新規ノートブックを作成
+     * 新規ノートブックを作成（現在のユーザーの縄張りに作成）
      */
     async createNotebook(
         title: string,
@@ -386,6 +570,7 @@ export class NotebookManager {
         await this.ensureBaseDirectories();
         const id = this.generateNotebookId();
         const now = new Date().toISOString();
+        const currentUser = this.getEffectiveUsername();
 
         const metadata: NotebookMetadata = {
             id,
@@ -395,25 +580,39 @@ export class NotebookManager {
             tags: [],
             icon: 'book-open',
             description: description.trim(),
+            userName: currentUser,
             linkedNotebookIds: linkedNotebookIds || [],
             boundFolderPath: boundFolderPath?.trim() || undefined,
             systemId: systemId || undefined,
             templateId: templateId || undefined
         };
 
-        // 2. 実体フォルダ構造の作成
-        const notebookDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}`);
+        // 2. 実体フォルダ構造の作成 (users/<currentUser>/notebooks/<id>)
+        const userBase = normalizePath(`${this.settings.rootDir}/users/${currentUser}`);
+        await this.ensureFolder(userBase);
+        await this.ensureFolder(normalizePath(`${userBase}/notebooks`));
+        await this.ensureFolder(normalizePath(`${userBase}/index`));
+
+        const notebookDir = normalizePath(`${userBase}/notebooks/${id}`);
         await this.ensureFolder(notebookDir);
         await this.ensureFolder(normalizePath(`${notebookDir}/sources`));
         await this.ensureFolder(normalizePath(`${notebookDir}/artifacts`));
         await this.ensureFolder(normalizePath(`${notebookDir}/sessions`));
 
+        // ロケーションキャッシュ登録
+        const indexPath = normalizePath(`${userBase}/index/${id}.md`);
+        this.locationCache.set(id, {
+            notebookDir,
+            indexPath,
+            userName: currentUser,
+            isLegacy: false
+        });
+
         // 3. 初期チャットセッションの作成
         const initialSession = await this.createChatSession(id, '新規セッション 1');
         metadata.activeSessionId = initialSession.id;
 
-        // 1. Index Markdown の作成 (activeSessionId を含める)
-        const indexPath = normalizePath(`${this.settings.rootDir}/index/${id}.md`);
+        // 1. Index Markdown の作成 (activeSessionId, user_name を含める)
         const frontmatterObj: Record<string, any> = {
             notebook_id: metadata.id,
             title: metadata.title,
@@ -422,6 +621,7 @@ export class NotebookManager {
             tags: metadata.tags,
             icon: metadata.icon,
             description: metadata.description,
+            user_name: currentUser,
             linked_notebook_ids: metadata.linkedNotebookIds || [],
             active_session_id: metadata.activeSessionId
         };
@@ -437,30 +637,71 @@ export class NotebookManager {
     }
 
     /**
-     * 全ノートブックのメタデータ一覧を取得
+     * 全ノートブックのメタデータ一覧を取得（全ユーザーの縄張り＋既存レガシー領域を集約）
      */
     async getAllNotebooks(): Promise<NotebookMetadata[]> {
         await this.ensureBaseDirectories();
-        const indexDir = normalizePath(`${this.settings.rootDir}/index`);
-        const folder = this.app.vault.getAbstractFileByPath(indexDir);
-        if (!(folder instanceof TFolder)) {
-            return [];
-        }
+        const root = normalizePath(this.settings.rootDir);
+        const notebooksMap = new Map<string, NotebookMetadata>();
 
-        const notebooks: NotebookMetadata[] = [];
-        for (const file of folder.children) {
-            if (file instanceof TFile && file.extension === 'md') {
-                try {
-                    const metadata = await this.readNotebookMetadata(file);
-                    if (metadata) {
-                        notebooks.push(metadata);
+        // 1. users/*/index/*.md を走査 (全ユーザーの縄張り)
+        const usersDir = normalizePath(`${root}/users`);
+        const usersFolder = this.app.vault.getAbstractFileByPath(usersDir);
+        if (usersFolder instanceof TFolder) {
+            for (const userDir of usersFolder.children) {
+                if (userDir instanceof TFolder) {
+                    const uName = userDir.name;
+                    const uIndexDir = normalizePath(`${userDir.path}/index`);
+                    const uIndexFolder = this.app.vault.getAbstractFileByPath(uIndexDir);
+                    if (uIndexFolder instanceof TFolder) {
+                        for (const file of uIndexFolder.children) {
+                            if (file instanceof TFile && file.extension === 'md') {
+                                try {
+                                    const metadata = await this.readNotebookMetadata(file, uName);
+                                    if (metadata) {
+                                        notebooksMap.set(metadata.id, metadata);
+                                        this.locationCache.set(metadata.id, {
+                                            notebookDir: normalizePath(`${userDir.path}/notebooks/${metadata.id}`),
+                                            indexPath: file.path,
+                                            userName: uName,
+                                            isLegacy: false
+                                        });
+                                    }
+                                } catch (e) {
+                                    console.error(`Failed to parse user notebook index: ${file.path}`, e);
+                                }
+                            }
+                        }
                     }
-                } catch (e) {
-                    console.error(`Failed to parse notebook index file: ${file.path}`, e);
                 }
             }
         }
 
+        // 2. index/*.md を走査 (既存レガシー・共有ノートブック)
+        const legacyIndexDir = normalizePath(`${root}/index`);
+        const legacyFolder = this.app.vault.getAbstractFileByPath(legacyIndexDir);
+        if (legacyFolder instanceof TFolder) {
+            for (const file of legacyFolder.children) {
+                if (file instanceof TFile && file.extension === 'md') {
+                    try {
+                        const metadata = await this.readNotebookMetadata(file);
+                        if (metadata && !notebooksMap.has(metadata.id)) {
+                            notebooksMap.set(metadata.id, metadata);
+                            this.locationCache.set(metadata.id, {
+                                notebookDir: normalizePath(`${root}/notebooks/${metadata.id}`),
+                                indexPath: file.path,
+                                userName: undefined,
+                                isLegacy: true
+                            });
+                        }
+                    } catch (e) {
+                        console.error(`Failed to parse legacy notebook index: ${file.path}`, e);
+                    }
+                }
+            }
+        }
+
+        const notebooks = Array.from(notebooksMap.values());
         // 更新日時の降順でソート
         return notebooks.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
     }
@@ -468,7 +709,7 @@ export class NotebookManager {
     /**
      * Index Markdown ファイルからメタデータを読み込み
      */
-    private async readNotebookMetadata(file: TFile): Promise<NotebookMetadata | null> {
+    private async readNotebookMetadata(file: TFile, defaultUserName?: string): Promise<NotebookMetadata | null> {
         const content = await this.app.vault.read(file);
         const match = content.match(/^---\n([\s\S]*?)\n---/);
         if (!match) return null;
@@ -484,10 +725,13 @@ export class NotebookManager {
             tags: yaml.tags || [],
             icon: yaml.icon || 'book-open',
             description: yaml.description || '',
+            userName: yaml.user_name || yaml.userName || defaultUserName || undefined,
             linkedNotebookIds: yaml.linked_notebook_ids || yaml.linkedNotebookIds || [],
             activeSessionId: yaml.active_session_id || yaml.activeSessionId || undefined,
             boundFolderPath: yaml.bound_folder_path || yaml.boundFolderPath || undefined,
             boundMmChannels: yaml.bound_mm_channels || yaml.boundMmChannels || [],
+            gitlabServerId: yaml.gitlab_server_id || yaml.gitlabServerId || undefined,
+            gitlabProjectId: yaml.gitlab_project_id || yaml.gitlabProjectId || undefined,
             systemId: yaml.system_id || undefined,
             templateId: yaml.template_id || undefined
         };
@@ -497,10 +741,11 @@ export class NotebookManager {
      * ID からノートブックメタデータを取得
      */
     async getNotebookMetadata(id: string): Promise<NotebookMetadata | null> {
-        const indexPath = normalizePath(`${this.settings.rootDir}/index/${id}.md`);
+        const indexPath = await this.getNotebookIndexPath(id);
         const file = this.app.vault.getAbstractFileByPath(indexPath);
         if (file instanceof TFile) {
-            return await this.readNotebookMetadata(file);
+            const loc = await this.resolveNotebookLocation(id);
+            return await this.readNotebookMetadata(file, loc.userName);
         }
         return null;
     }
@@ -509,11 +754,12 @@ export class NotebookManager {
      * ノートブックメタデータの更新
      */
     async updateNotebookMetadata(id: string, updates: Partial<NotebookMetadata>): Promise<void> {
-        const indexPath = normalizePath(`${this.settings.rootDir}/index/${id}.md`);
+        const indexPath = await this.getNotebookIndexPath(id);
         const file = this.app.vault.getAbstractFileByPath(indexPath);
         if (!(file instanceof TFile)) return;
 
-        const current = await this.readNotebookMetadata(file);
+        const loc = await this.resolveNotebookLocation(id);
+        const current = await this.readNotebookMetadata(file, loc.userName);
         if (!current) return;
 
         const updated: NotebookMetadata = {
@@ -532,9 +778,12 @@ export class NotebookManager {
             description: updated.description,
             linked_notebook_ids: updated.linkedNotebookIds || []
         };
+        if (updated.userName) frontmatterObj.user_name = updated.userName;
         if (updated.activeSessionId) frontmatterObj.active_session_id = updated.activeSessionId;
         if (updated.boundFolderPath !== undefined) frontmatterObj.bound_folder_path = updated.boundFolderPath;
         if (updated.boundMmChannels !== undefined) frontmatterObj.bound_mm_channels = updated.boundMmChannels;
+        if (updated.gitlabServerId) frontmatterObj.gitlab_server_id = updated.gitlabServerId;
+        if (updated.gitlabProjectId) frontmatterObj.gitlab_project_id = updated.gitlabProjectId;
         if (updated.systemId) frontmatterObj.system_id = updated.systemId;
         if (updated.templateId) frontmatterObj.template_id = updated.templateId;
 
@@ -601,18 +850,181 @@ export class NotebookManager {
      * ノートブックの削除
      */
     async deleteNotebook(id: string): Promise<void> {
-        // 1. Index Markdown 削除
-        const indexPath = normalizePath(`${this.settings.rootDir}/index/${id}.md`);
-        const indexFile = this.app.vault.getAbstractFileByPath(indexPath);
+        const loc = await this.resolveNotebookLocation(id);
+        const indexFile = this.app.vault.getAbstractFileByPath(loc.indexPath);
         if (indexFile) {
             await this.app.vault.delete(indexFile, true);
         }
 
-        // 2. 実体フォルダの削除
-        const notebookDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}`);
-        const folder = this.app.vault.getAbstractFileByPath(notebookDir);
+        const folder = this.app.vault.getAbstractFileByPath(loc.notebookDir);
         if (folder) {
             await this.app.vault.delete(folder, true);
+        }
+
+        this.locationCache.delete(id);
+    }
+
+    /**
+     * ノートブックを指定したユーザーの縄張りに移行（マイグレーション）
+     */
+    async migrateNotebookToUser(id: string, targetUser?: string): Promise<NotebookMetadata> {
+        const targetUsername = targetUser ? this.sanitizeUsername(targetUser) : this.getEffectiveUsername();
+        const currentLoc = await this.resolveNotebookLocation(id);
+        const metadata = await this.getNotebookMetadata(id);
+        if (!metadata) {
+            throw new Error(`ノートブックが見つかりません: ${id}`);
+        }
+
+        // 既に同一ユーザーの縄張りの場合はスキップ
+        if (!currentLoc.isLegacy && currentLoc.userName === targetUsername) {
+            return metadata;
+        }
+
+        const root = normalizePath(this.settings.rootDir);
+        const targetUserBase = normalizePath(`${root}/users/${targetUsername}`);
+        await this.ensureFolder(targetUserBase);
+        await this.ensureFolder(normalizePath(`${targetUserBase}/index`));
+        await this.ensureFolder(normalizePath(`${targetUserBase}/notebooks`));
+
+        const targetNotebookDir = normalizePath(`${targetUserBase}/notebooks/${id}`);
+        const targetIndexPath = normalizePath(`${targetUserBase}/index/${id}.md`);
+
+        // 実体フォルダのコピー（再帰）
+        await this.copyFolderRecursive(currentLoc.notebookDir, targetNotebookDir);
+
+        // インデックスファイルの移動・更新
+        const oldIndexFile = this.app.vault.getAbstractFileByPath(currentLoc.indexPath);
+        let indexContent = '';
+        if (oldIndexFile instanceof TFile) {
+            indexContent = await this.app.vault.read(oldIndexFile);
+        }
+        metadata.userName = targetUsername;
+        metadata.updatedAt = new Date().toISOString();
+
+        // frontmatter の user_name を更新
+        const frontmatterObj: Record<string, any> = {
+            notebook_id: metadata.id,
+            title: metadata.title,
+            created_at: metadata.createdAt,
+            updated_at: metadata.updatedAt,
+            tags: metadata.tags,
+            icon: metadata.icon,
+            description: metadata.description,
+            user_name: targetUsername,
+            linked_notebook_ids: metadata.linkedNotebookIds || [],
+            active_session_id: metadata.activeSessionId
+        };
+        if (metadata.boundFolderPath) frontmatterObj.bound_folder_path = metadata.boundFolderPath;
+        if (metadata.systemId) frontmatterObj.system_id = metadata.systemId;
+        if (metadata.templateId) frontmatterObj.template_id = metadata.templateId;
+
+        const body = indexContent.replace(/^---\n[\s\S]*?\n---\n?/, '') || `# ${metadata.title}\n\n${metadata.description}\n`;
+        const newIndexContent = `---\n${stringifyYaml(frontmatterObj)}---\n${body}`;
+
+        await this.safeCreateOrModify(targetIndexPath, newIndexContent);
+
+        // 旧ファイルのクリーンアップ（レガシー領域または別ユーザー領域から削除）
+        if (oldIndexFile) {
+            await this.app.vault.delete(oldIndexFile, true);
+        }
+        const oldFolder = this.app.vault.getAbstractFileByPath(currentLoc.notebookDir);
+        if (oldFolder) {
+            await this.app.vault.delete(oldFolder, true);
+        }
+
+        // ロケーションキャッシュを更新
+        this.locationCache.set(id, {
+            notebookDir: targetNotebookDir,
+            indexPath: targetIndexPath,
+            userName: targetUsername,
+            isLegacy: false
+        });
+
+        return metadata;
+    }
+
+    /**
+     * ノートブックを自分の縄張りに複製（フォーク）
+     */
+    async forkNotebook(id: string, newTitle?: string): Promise<NotebookMetadata> {
+        const sourceMeta = await this.getNotebookMetadata(id);
+        if (!sourceMeta) {
+            throw new Error(`フォーク元ノートブックが見つかりません: ${id}`);
+        }
+
+        const sourceLoc = await this.resolveNotebookLocation(id);
+        const newId = this.generateNotebookId();
+        const currentUser = this.getEffectiveUsername();
+        const now = new Date().toISOString();
+
+        const title = newTitle?.trim() || `[フォーク] ${sourceMeta.title}`;
+
+        const root = normalizePath(this.settings.rootDir);
+        const userBase = normalizePath(`${root}/users/${currentUser}`);
+        await this.ensureFolder(userBase);
+        await this.ensureFolder(normalizePath(`${userBase}/index`));
+        await this.ensureFolder(normalizePath(`${userBase}/notebooks`));
+
+        const targetNotebookDir = normalizePath(`${userBase}/notebooks/${newId}`);
+        const targetIndexPath = normalizePath(`${userBase}/index/${newId}.md`);
+
+        // 実体フォルダのコピー
+        await this.copyFolderRecursive(sourceLoc.notebookDir, targetNotebookDir);
+
+        const newMeta: NotebookMetadata = {
+            ...sourceMeta,
+            id: newId,
+            title,
+            createdAt: now,
+            updatedAt: now,
+            userName: currentUser
+        };
+
+        const frontmatterObj: Record<string, any> = {
+            notebook_id: newMeta.id,
+            title: newMeta.title,
+            created_at: newMeta.createdAt,
+            updated_at: newMeta.updatedAt,
+            tags: newMeta.tags,
+            icon: newMeta.icon,
+            description: newMeta.description,
+            user_name: currentUser,
+            linked_notebook_ids: newMeta.linkedNotebookIds || [],
+            active_session_id: newMeta.activeSessionId
+        };
+        if (newMeta.boundFolderPath) frontmatterObj.bound_folder_path = newMeta.boundFolderPath;
+        if (newMeta.systemId) frontmatterObj.system_id = newMeta.systemId;
+        if (newMeta.templateId) frontmatterObj.template_id = newMeta.templateId;
+
+        const indexContent = `---\n${stringifyYaml(frontmatterObj)}---\n# ${newMeta.title}\n\n${newMeta.description}\n`;
+        await this.safeCreateOrModify(targetIndexPath, indexContent);
+
+        this.locationCache.set(newId, {
+            notebookDir: targetNotebookDir,
+            indexPath: targetIndexPath,
+            userName: currentUser,
+            isLegacy: false
+        });
+
+        return newMeta;
+    }
+
+    /**
+     * フォルダを再帰的にコピー
+     */
+    private async copyFolderRecursive(srcPath: string, destPath: string): Promise<void> {
+        await this.ensureFolder(destPath);
+        const srcFolder = this.app.vault.getAbstractFileByPath(srcPath);
+        if (!(srcFolder instanceof TFolder)) return;
+
+        for (const child of srcFolder.children) {
+            const childDest = normalizePath(`${destPath}/${child.name}`);
+            if (child instanceof TFile) {
+                const data = await this.app.vault.readBinary(child);
+                await this.safeCreateOrModifyBinary(childDest, data);
+            } else if (child instanceof TFolder) {
+                await this.copyFolderRecursive(child.path, childDest);
+            }
         }
     }
 
@@ -620,7 +1032,8 @@ export class NotebookManager {
      * ソースメタデータ（origins.json）の読み込み
      */
     private async readSourcesOrigins(id: string): Promise<Record<string, SourceOrigin>> {
-        const originsPath = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources/.origins.json`);
+        const sourcesDir = await this.getSourcesDir(id);
+        const originsPath = normalizePath(`${sourcesDir}/.origins.json`);
         const file = this.app.vault.getAbstractFileByPath(originsPath);
         if (file instanceof TFile) {
             try {
@@ -637,7 +1050,7 @@ export class NotebookManager {
      * ソースメタデータ（origins.json）の保存
      */
     private async saveSourcesOrigins(id: string, origins: Record<string, SourceOrigin>): Promise<void> {
-        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources`);
+        const sourcesDir = await this.getSourcesDir(id);
         await this.ensureFolder(sourcesDir);
         const originsPath = normalizePath(`${sourcesDir}/.origins.json`);
         const content = JSON.stringify(origins, null, 2);
@@ -654,7 +1067,8 @@ export class NotebookManager {
      * 変換エラー情報（.transcription-errors.json）の取得
      */
     async readTranscriptionErrors(id: string): Promise<Record<string, TranscriptionErrorEntry>> {
-        const errorsPath = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources/.transcription-errors.json`);
+        const sourcesDir = await this.getSourcesDir(id);
+        const errorsPath = normalizePath(`${sourcesDir}/.transcription-errors.json`);
         const file = this.app.vault.getAbstractFileByPath(errorsPath);
         if (file instanceof TFile) {
             try {
@@ -671,7 +1085,7 @@ export class NotebookManager {
      * 変換エラー情報の保存
      */
     private async saveTranscriptionErrors(id: string, errors: Record<string, TranscriptionErrorEntry>): Promise<void> {
-        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources`);
+        const sourcesDir = await this.getSourcesDir(id);
         await this.ensureFolder(sourcesDir);
         const errorsPath = normalizePath(`${sourcesDir}/.transcription-errors.json`);
         const content = JSON.stringify(errors, null, 2);
@@ -735,7 +1149,7 @@ export class NotebookManager {
      * ソースファイル一覧の取得
      */
     async getSources(id: string): Promise<NotebookSource[]> {
-        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources`);
+        const sourcesDir = await this.getSourcesDir(id);
         const folder = this.app.vault.getAbstractFileByPath(sourcesDir);
         if (!(folder instanceof TFolder)) return [];
 
@@ -786,7 +1200,7 @@ export class NotebookManager {
         data: ArrayBuffer | Buffer | string,
         origin?: SourceOrigin
     ): Promise<AddSourceResult> {
-        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources`);
+        const sourcesDir = await this.getSourcesDir(id);
         await this.ensureFolder(sourcesDir);
 
         // origin が渡された場合、.origins.json を更新
@@ -1120,7 +1534,7 @@ uploaded_at: "${new Date().toISOString()}"
      */
     async retranscribeSource(id: string, fileName: string): Promise<{ success: boolean; error?: string }> {
         DebugFolderHelper.logPipelineStep(fileName, 1, 'Retry', `再変換を開始します`);
-        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources`);
+        const sourcesDir = await this.getSourcesDir(id);
         const rawInSources = normalizePath(`${sourcesDir}/${fileName}`);
         const rawInCache = normalizePath(`${sourcesDir}/.cache/${fileName}`);
 
@@ -1148,8 +1562,7 @@ uploaded_at: "${new Date().toISOString()}"
                     buffer = Buffer.from(originalArrayBuf);
                     isDownloadedFromGitLab = true;
                 } catch (fetchErr: any) {
-                    DebugFolderHelper.logPipelineError(fileName, 1, 'GitLab-Fetch', fetchErr);
-                    return { success: false, error: `GitLab からの原本ダウンロードに失敗しました: ${fetchErr?.message || fetchErr}` };
+                    DebugFolderHelper.logPipelineError(fileName, 1, 'GitLab-Fetch-Fail', `GitLabからの原本取得に失敗: ${fetchErr?.message}`);
                 }
             }
         }
@@ -1202,7 +1615,7 @@ uploaded_at: "${new Date().toISOString()}"
      * ソースファイルの削除
      */
     async deleteSourceFile(id: string, fileName: string): Promise<void> {
-        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}/sources`);
+        const sourcesDir = await this.getSourcesDir(id);
         const filePath = normalizePath(`${sourcesDir}/${fileName}`);
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (file instanceof TFile) {
@@ -1283,7 +1696,7 @@ uploaded_at: "${new Date().toISOString()}"
      * 成果物一覧の取得
      */
     async getArtifacts(id: string): Promise<NotebookArtifact[]> {
-        const artifactsDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}/artifacts`);
+        const artifactsDir = await this.getArtifactsDir(id);
         const folder = this.app.vault.getAbstractFileByPath(artifactsDir);
         if (!(folder instanceof TFolder)) return [];
 
@@ -1307,7 +1720,7 @@ uploaded_at: "${new Date().toISOString()}"
      * 成果物ファイルの作成/保存
      */
     async addArtifactFile(id: string, title: string, content: string): Promise<TFile> {
-        const artifactsDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}/artifacts`);
+        const artifactsDir = await this.getArtifactsDir(id);
         await this.ensureFolder(artifactsDir);
 
         // 安全なファイル名にクレンジング
@@ -1328,7 +1741,8 @@ uploaded_at: "${new Date().toISOString()}"
      * 成果物ファイルの削除
      */
     async deleteArtifactFile(id: string, fileName: string): Promise<void> {
-        const filePath = normalizePath(`${this.settings.rootDir}/notebooks/${id}/artifacts/${fileName}`);
+        const artifactsDir = await this.getArtifactsDir(id);
+        const filePath = normalizePath(`${artifactsDir}/${fileName}`);
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (file instanceof TFile) {
             await this.app.vault.delete(file);
@@ -1343,8 +1757,8 @@ uploaded_at: "${new Date().toISOString()}"
      * チャットセッション一覧の取得（旧chat.jsonからの自動移行含む）
      */
     async getChatSessions(notebookId: string): Promise<ChatSessionMetadata[]> {
-        const notebookDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}`);
-        const sessionsDir = normalizePath(`${notebookDir}/sessions`);
+        const notebookDir = await this.getNotebookDir(notebookId);
+        const sessionsDir = await this.getSessionsDir(notebookId);
         await this.ensureFolder(sessionsDir);
 
         const folder = this.app.vault.getAbstractFileByPath(sessionsDir);
@@ -1410,7 +1824,8 @@ uploaded_at: "${new Date().toISOString()}"
      * 特定セッションの会話データを取得
      */
     async getChatSession(notebookId: string, sessionId: string): Promise<ChatSession | null> {
-        const filePath = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sessions/${sessionId}.json`);
+        const sessionsDir = await this.getSessionsDir(notebookId);
+        const filePath = normalizePath(`${sessionsDir}/${sessionId}.json`);
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (file instanceof TFile) {
             try {
@@ -1427,7 +1842,7 @@ uploaded_at: "${new Date().toISOString()}"
      * チャットセッションの保存
      */
     async saveChatSession(notebookId: string, session: ChatSession): Promise<void> {
-        const sessionsDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sessions`);
+        const sessionsDir = await this.getSessionsDir(notebookId);
         await this.ensureFolder(sessionsDir);
 
         session.updatedAt = new Date().toISOString();
@@ -1446,7 +1861,7 @@ uploaded_at: "${new Date().toISOString()}"
      * 新規チャットセッションの作成
      */
     async createChatSession(notebookId: string, title?: string, initialMessages: ChatMessage[] = []): Promise<ChatSession> {
-        const sessionsDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sessions`);
+        const sessionsDir = await this.getSessionsDir(notebookId);
         await this.ensureFolder(sessionsDir);
 
         const id = `session_${this.generateNotebookId()}`;
@@ -1469,7 +1884,8 @@ uploaded_at: "${new Date().toISOString()}"
      * チャットセッションの削除
      */
     async deleteChatSession(notebookId: string, sessionId: string): Promise<void> {
-        const filePath = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sessions/${sessionId}.json`);
+        const sessionsDir = await this.getSessionsDir(notebookId);
+        const filePath = normalizePath(`${sessionsDir}/${sessionId}.json`);
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (file instanceof TFile) {
             await this.app.vault.delete(file);
@@ -1491,7 +1907,8 @@ uploaded_at: "${new Date().toISOString()}"
      * チャット履歴の取得（後方互換用）
      */
     async getChatHistory(id: string): Promise<ChatMessage[]> {
-        const chatPath = normalizePath(`${this.settings.rootDir}/notebooks/${id}/chat.json`);
+        const notebookDir = await this.getNotebookDir(id);
+        const chatPath = normalizePath(`${notebookDir}/chat.json`);
         const file = this.app.vault.getAbstractFileByPath(chatPath);
         if (file instanceof TFile) {
             try {
@@ -1508,7 +1925,7 @@ uploaded_at: "${new Date().toISOString()}"
      * チャット履歴の保存（後方互換用）
      */
     async saveChatHistory(id: string, history: ChatMessage[]): Promise<void> {
-        const notebookDir = normalizePath(`${this.settings.rootDir}/notebooks/${id}`);
+        const notebookDir = await this.getNotebookDir(id);
         await this.ensureFolder(notebookDir);
 
         const chatPath = normalizePath(`${notebookDir}/chat.json`);
@@ -1673,7 +2090,7 @@ uploaded_at: "${new Date().toISOString()}"
 
         const safeChannelName = (channel.channelName || 'channel').replace(/[^a-zA-Z0-9_\-]/g, '_');
         const fileName = channel.sourceFileName || `mattermost_${safeChannelName}.md`;
-        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sources`);
+        const sourcesDir = await this.getSourcesDir(notebookId);
         await this.ensureFolder(sourcesDir);
 
         const filePath = normalizePath(`${sourcesDir}/${fileName}`);
@@ -1737,7 +2154,7 @@ uploaded_at: "${new Date().toISOString()}"
         if (!ch) throw new Error(`対象チャンネルがバインドされていません: ${channelId}`);
 
         const fileName = ch.sourceFileName || `mattermost_${ch.channelName}.md`;
-        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sources`);
+        const sourcesDir = await this.getSourcesDir(notebookId);
         const filePath = normalizePath(`${sourcesDir}/${fileName}`);
         const file = this.app.vault.getAbstractFileByPath(filePath);
 
@@ -1772,7 +2189,7 @@ uploaded_at: "${new Date().toISOString()}"
     async addMattermostSearchSource(notebookId: string, query: string, markdown: string): Promise<TFile> {
         const safeQuery = query.replace(/[^a-zA-Z0-9_\-\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/g, '_').slice(0, 30);
         const fileName = `mattermost_search_${safeQuery}_${Date.now()}.md`;
-        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sources`);
+        const sourcesDir = await this.getSourcesDir(notebookId);
         await this.ensureFolder(sourcesDir);
 
         const filePath = normalizePath(`${sourcesDir}/${fileName}`);
@@ -1820,7 +2237,11 @@ uploaded_at: "${new Date().toISOString()}"
      * 画像ローカルキャッシュのパス情報を取得
      */
     getImageCachePath(notebookId: string, filename: string): { relativePath: string; absolutePath: string } {
-        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sources`);
+        const loc = this.locationCache.get(notebookId);
+        let sourcesDir = loc ? normalizePath(`${loc.notebookDir}/sources`) : normalizePath(`${this.settings.rootDir}/users/${this.getEffectiveUsername()}/notebooks/${notebookId}/sources`);
+        if (!loc && !this.app.vault.getAbstractFileByPath(sourcesDir)) {
+            sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sources`);
+        }
         const relativePath = normalizePath(`${sourcesDir}/.cache/images/${filename}`);
         const vaultBasePath = this.getVaultBasePath();
         const absolutePath = vaultBasePath ? path.join(vaultBasePath, relativePath) : '';
@@ -1844,7 +2265,7 @@ uploaded_at: "${new Date().toISOString()}"
      * WebP画像をローカルキャッシュ（sources/.cache/images/）に保存し、.gitignore を確保する
      */
     async saveImageToCache(notebookId: string, filename: string, data: ArrayBuffer): Promise<string> {
-        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sources`);
+        const sourcesDir = await this.getSourcesDir(notebookId);
         const cacheDir = normalizePath(`${sourcesDir}/.cache`);
         const imagesDir = normalizePath(`${cacheDir}/images`);
 
@@ -1891,7 +2312,7 @@ uploaded_at: "${new Date().toISOString()}"
             return result;
         }
 
-        const sourcesDir = normalizePath(`${this.settings.rootDir}/notebooks/${notebookId}/sources`);
+        const sourcesDir = await this.getSourcesDir(notebookId);
         const vaultBasePath = this.getVaultBasePath();
         const sourcesDirAbs = vaultBasePath ? path.join(vaultBasePath, sourcesDir) : '';
 

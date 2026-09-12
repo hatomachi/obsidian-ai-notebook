@@ -91,6 +91,10 @@ export class GalleryView {
             const iconBadge = span({ cls: 'ai-notebook-card-icon' }, cardHeader);
             iconBadge.textContent = this.getIconDisplay(nb.icon);
 
+            if (nb.userName) {
+                span({ text: `@${nb.userName}`, cls: 'ai-notebook-user-badge is-others' }, cardHeader);
+            }
+
             el('h3', { text: nb.title, cls: 'ai-notebook-card-title' }, cardHeader);
 
             // Card Description

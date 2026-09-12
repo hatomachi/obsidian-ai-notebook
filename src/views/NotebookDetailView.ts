@@ -156,11 +156,66 @@ export class AINotebookDetailView extends ItemView {
         setIcon(iconSpan, this.metadata.icon || 'book-open');
         titleArea.createEl('h2', { text: this.metadata.title, cls: 'ai-notebook-detail-title' });
 
+        const currentUser = this.plugin.notebookManager.getEffectiveUsername();
+        const isMine = !this.metadata.userName || this.metadata.userName === currentUser;
+        const isLegacy = !this.metadata.userName;
+
+        // 👤 ユーザー・縄張りバッジ
+        const userBadge = titleArea.createSpan({
+            cls: `ai-notebook-user-badge ${isMine && !isLegacy ? 'is-mine' : isLegacy ? 'is-legacy' : 'is-others'}`
+        });
+        if (isMine && !isLegacy) {
+            setIcon(userBadge.createSpan({ cls: 'ai-notebook-user-icon' }), 'user');
+            userBadge.createSpan({ text: ' 自分' });
+        } else if (!isLegacy) {
+            setIcon(userBadge.createSpan({ cls: 'ai-notebook-user-icon' }), 'users');
+            userBadge.createSpan({ text: ` @${this.metadata.userName}` });
+        } else {
+            setIcon(userBadge.createSpan({ cls: 'ai-notebook-user-icon' }), 'globe');
+            userBadge.createSpan({ text: ' 共有' });
+        }
+
         const headerRight = header.createDiv({ cls: 'ai-notebook-header-right' });
+
+        // 他人の縄張りの場合：フォークボタン
+        if (!isMine) {
+            const forkBtn = headerRight.createEl('button', {
+                cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-xs',
+                text: '🍴 自分の縄張りにフォーク'
+            });
+            forkBtn.onclick = async () => {
+                if (!this.notebookId) return;
+                const forked = await this.plugin.notebookManager.forkNotebook(this.notebookId);
+                new Notice(`ノートブックを自分の縄張りにフォークしました: ${forked.title}`);
+                await this.setNotebookId(forked.id);
+            };
+        }
+
         const agentBadge = headerRight.createDiv({ cls: 'ai-notebook-agent-badge' });
         setIcon(agentBadge, 'bot');
         const agentName = this.plugin.settings.activeAgent === 'antigravity' ? 'Antigravity CLI' : 'Claude Code CLI';
         agentBadge.createSpan({ text: ` ${agentName}` });
+
+        // 他人の縄張りの場合：閲覧モード注意喚起バナー
+        if (!isMine) {
+            const banner = container.createDiv({ cls: 'ai-notebook-territory-warning-banner' });
+            const bannerIcon = banner.createSpan({ cls: 'ai-notebook-banner-icon' });
+            setIcon(bannerIcon, 'info');
+            banner.createSpan({
+                text: ` このノートブックは @${this.metadata.userName} さんの縄張りです（閲覧モード）。直接編集すると Git 競合の原因となるため、自分の縄張りにフォークして作業することを推奨します。`,
+                cls: 'ai-notebook-banner-text'
+            });
+            const bannerForkBtn = banner.createEl('button', {
+                cls: 'ai-notebook-btn ai-notebook-btn-primary ai-notebook-btn-xs',
+                text: '🍴 フォークして編集'
+            });
+            bannerForkBtn.onclick = async () => {
+                if (!this.notebookId) return;
+                const forked = await this.plugin.notebookManager.forkNotebook(this.notebookId);
+                new Notice(`フォークしました: ${forked.title}`);
+                await this.setNotebookId(forked.id);
+            };
+        }
 
         // 2. 3カラムボディレイアウト
         const body = container.createDiv({ cls: 'ai-notebook-detail-body' });
@@ -450,10 +505,11 @@ export class AINotebookDetailView extends ItemView {
 
         // 🛠️ デバッグ動線: sources 実フォルダ (Finder) & 左ペイン表示ボタン (着脱容易)
         if ((this.plugin.settings.enableDebugActions ?? true) && this.notebookId) {
-            const sourcesPath = `${this.plugin.settings.rootDir}/notebooks/${this.notebookId}/sources`;
-            DebugFolderHelper.renderHeaderDebugActions(sourceHeader, {
-                app: this.app,
-                sourcesPath
+            this.plugin.notebookManager.getSourcesDir(this.notebookId).then(sourcesPath => {
+                DebugFolderHelper.renderHeaderDebugActions(sourceHeader, {
+                    app: this.app,
+                    sourcesPath
+                });
             });
         }
 
@@ -1261,7 +1317,7 @@ export class AINotebookDetailView extends ItemView {
                 vaultBasePath = adapter.getBasePath();
             }
 
-            const notebookRelative = `${this.plugin.settings.rootDir}/notebooks/${this.notebookId}`;
+            const notebookRelative = await this.plugin.notebookManager.getNotebookDir(this.notebookId);
             const notebookDirAbs = path.join(vaultBasePath, notebookRelative);
             const sourcesDirAbs = path.join(notebookDirAbs, 'sources');
             const artifactsDirAbs = path.join(notebookDirAbs, 'artifacts');

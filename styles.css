@@ -76,8 +76,19 @@
     background-color: var(--background-modifier-hover);
 }
 
-.ai-notebook-search-container {
+.ai-notebook-gallery-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
     margin-bottom: 28px;
+}
+
+.ai-notebook-search-container {
+    flex: 1;
+    min-width: 260px;
+    margin-bottom: 0;
 }
 
 .ai-notebook-search-input {
@@ -95,6 +106,138 @@
 
 .ai-notebook-search-input:focus {
     border-color: var(--interactive-accent);
+}
+
+/* 縄張りフィルタータブ */
+.ai-notebook-territory-filter-bar {
+    display: flex;
+    gap: 4px;
+    background-color: var(--background-secondary);
+    padding: 4px;
+    border-radius: 8px;
+    border: 1px solid var(--background-modifier-border);
+}
+
+.ai-notebook-filter-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.ai-notebook-filter-tab:hover {
+    background-color: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.ai-notebook-filter-tab.is-active {
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+    font-weight: 600;
+}
+
+.ai-notebook-filter-tab-count {
+    font-size: 0.75rem;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background-color: var(--background-modifier-form-field);
+}
+
+.ai-notebook-filter-tab.is-active .ai-notebook-filter-tab-count {
+    background-color: rgba(255, 255, 255, 0.25);
+}
+
+/* ユーザー・縄張りバッジ */
+.ai-notebook-card-icon-area {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ai-notebook-user-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.72rem;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 500;
+}
+
+.ai-notebook-user-badge.is-mine {
+    background-color: rgba(90, 160, 255, 0.15);
+    color: var(--interactive-accent);
+    border: 1px solid rgba(90, 160, 255, 0.35);
+}
+
+.ai-notebook-user-badge.is-others {
+    background-color: rgba(235, 120, 30, 0.15);
+    color: #eb781e;
+    border: 1px solid rgba(235, 120, 30, 0.35);
+}
+
+.ai-notebook-user-badge.is-legacy {
+    background-color: var(--background-modifier-form-field);
+    color: var(--text-muted);
+    border: 1px solid var(--background-modifier-border);
+}
+
+.ai-notebook-card.is-my-territory {
+    border-top: 3px solid var(--interactive-accent);
+}
+
+.ai-notebook-card.is-shared-territory {
+    border-top: 3px solid rgba(235, 120, 30, 0.7);
+}
+
+.ai-notebook-card-action-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+}
+
+.ai-notebook-card-action-btn:hover {
+    background-color: var(--background-modifier-hover);
+    color: var(--interactive-accent);
+    transform: scale(1.1);
+}
+
+/* 縄張り注意喚起バナー */
+.ai-notebook-territory-warning-banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background-color: rgba(235, 120, 30, 0.1);
+    border: 1px solid rgba(235, 120, 30, 0.3);
+    padding: 8px 16px;
+    border-radius: 8px;
+    margin: 0 48px 16px 48px;
+    font-size: 0.88rem;
+    color: var(--text-normal);
+}
+
+.ai-notebook-territory-warning-banner .ai-notebook-banner-icon {
+    display: flex;
+    align-items: center;
+    color: #eb781e;
+}
+
+.ai-notebook-territory-warning-banner .ai-notebook-banner-text {
+    flex: 1;
 }
 
 /* Grid Layout */

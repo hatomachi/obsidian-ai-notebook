@@ -30,6 +30,7 @@ export interface NotebookMetadata {
     boundMmChannels?: MattermostChannelRef[]; // 💬 ノートブック単位のバインドMattermostチャンネル一覧
     gitlabServerId?: string; // 🦊 Notebook単位のバインドGitLabサーバーID
     gitlabProjectId?: string; // 🦊 Notebook単位のバインドGitLabプロジェクトID/パス
+    userName?: string; // 👤 所有ユーザー名 (縄張りモデル)
     systemId?: string; // 後方互換用
     templateId?: string; // 後方互換用
 }
@@ -284,6 +285,8 @@ export interface AINotebookSettings {
     gitlabServers?: GitLabServerConfig[];   // 登録されたGitLabサーバー一覧
     defaultGitLabServerId?: string;         // デフォルトで使用するサーバーID
     gitlabUploadsEnabled?: boolean;         // バイナリをGitLab Uploadsに自動オフロードするか (デフォルト: true)
+    // 👤 チーム共用 & 縄張りモデル設定 (Step 3)
+    userName?: string;                      // ユーザー名 / 縄張りID (未設定時はOSユーザー名自動推測)
 }
 
 export const DEFAULT_SETTINGS: AINotebookSettings = {
@@ -302,7 +305,8 @@ export const DEFAULT_SETTINGS: AINotebookSettings = {
     imageQuality: 0.8,
     gitlabServers: [],
     defaultGitLabServerId: '',
-    gitlabUploadsEnabled: true
+    gitlabUploadsEnabled: true,
+    userName: ''
 };
 
 

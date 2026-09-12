@@ -5,10 +5,13 @@ import { CreateNotebookModal } from './modals/CreateNotebookModal';
 
 export const VIEW_TYPE_GALLERY = 'ai-notebook-gallery';
 
+export type TerritoryFilter = 'all' | 'mine' | 'others';
+
 export class AINotebookGalleryView extends ItemView {
     plugin: AINotebookPlugin;
     notebooks: NotebookMetadata[] = [];
     searchQuery: string = '';
+    filterMode: TerritoryFilter = 'all';
 
     onSelectNotebookHandler?: (notebookId: string) => void;
 
@@ -73,8 +76,10 @@ export class AINotebookGalleryView extends ItemView {
             }).open();
         };
 
-        // 2. 検索バー
-        const searchContainer = container.createDiv({ cls: 'ai-notebook-search-container' });
+        // 2. コントロールバー（検索 ＆ 縄張りフィルタータブ）
+        const controlsContainer = container.createDiv({ cls: 'ai-notebook-gallery-controls' });
+
+        const searchContainer = controlsContainer.createDiv({ cls: 'ai-notebook-search-container' });
         const searchInput = searchContainer.createEl('input', {
             type: 'text',
             placeholder: 'ノートブックを検索...',
@@ -86,6 +91,32 @@ export class AINotebookGalleryView extends ItemView {
             this.renderGrid(gridEl);
         };
 
+        // 縄張りフィルタータブ
+        const currentUser = this.plugin.notebookManager.getEffectiveUsername();
+        const myCount = this.notebooks.filter(nb => nb.userName === currentUser).length;
+        const othersCount = this.notebooks.filter(nb => nb.userName !== currentUser).length;
+        const allCount = this.notebooks.length;
+
+        const filterBar = controlsContainer.createDiv({ cls: 'ai-notebook-territory-filter-bar' });
+
+        const tabs: { key: TerritoryFilter; label: string; count: number }[] = [
+            { key: 'all', label: 'すべて', count: allCount },
+            { key: 'mine', label: `👤 自分 (${currentUser})`, count: myCount },
+            { key: 'others', label: '👥 チーム共有', count: othersCount }
+        ];
+
+        for (const tab of tabs) {
+            const tabBtn = filterBar.createEl('button', {
+                cls: `ai-notebook-filter-tab ${this.filterMode === tab.key ? 'is-active' : ''}`
+            });
+            tabBtn.createSpan({ text: tab.label, cls: 'ai-notebook-filter-tab-text' });
+            tabBtn.createSpan({ text: `${tab.count}`, cls: 'ai-notebook-filter-tab-count' });
+            tabBtn.onclick = () => {
+                this.filterMode = tab.key;
+                this.render();
+            };
+        }
+
         // 3. カードグリッド
         const gridEl = container.createDiv({ cls: 'ai-notebook-grid' });
         this.renderGrid(gridEl);
@@ -93,46 +124,118 @@ export class AINotebookGalleryView extends ItemView {
 
     private renderGrid(gridEl: HTMLElement): void {
         gridEl.empty();
+        const currentUser = this.plugin.notebookManager.getEffectiveUsername();
 
-        const filtered = this.notebooks.filter(nb =>
-            nb.title.toLowerCase().includes(this.searchQuery.toLowerCase()) ||
-            nb.description.toLowerCase().includes(this.searchQuery.toLowerCase())
-        );
+        const filtered = this.notebooks.filter(nb => {
+            // 縄張りフィルター
+            if (this.filterMode === 'mine' && nb.userName !== currentUser) {
+                return false;
+            }
+            if (this.filterMode === 'others' && nb.userName === currentUser) {
+                return false;
+            }
 
-        // 新規作成カード
-        const newCard = gridEl.createDiv({ cls: 'ai-notebook-card ai-notebook-card-new' });
-        const newIcon = newCard.createDiv({ cls: 'ai-notebook-card-new-icon' });
-        setIcon(newIcon, 'plus');
-        newCard.createDiv({ text: '新規ノートブック作成', cls: 'ai-notebook-card-new-label' });
-        newCard.onclick = () => {
-            new CreateNotebookModal(this.app, this.plugin.notebookManager, async (nb) => {
-                await this.refresh();
-                if (this.onSelectNotebookHandler) {
-                    this.onSelectNotebookHandler(nb.id);
-                }
-            }).open();
-        };
+            // 検索クエリフィルター
+            if (!this.searchQuery) return true;
+            const q = this.searchQuery.toLowerCase();
+            return (
+                nb.title.toLowerCase().includes(q) ||
+                nb.description.toLowerCase().includes(q) ||
+                (nb.userName && nb.userName.toLowerCase().includes(q))
+            );
+        });
+
+        // 新規作成カード（「すべて」または「自分」フィルター時のみ表示）
+        if (this.filterMode !== 'others') {
+            const newCard = gridEl.createDiv({ cls: 'ai-notebook-card ai-notebook-card-new' });
+            const newIcon = newCard.createDiv({ cls: 'ai-notebook-card-new-icon' });
+            setIcon(newIcon, 'plus');
+            newCard.createDiv({ text: '新規ノートブック作成', cls: 'ai-notebook-card-new-label' });
+            newCard.onclick = () => {
+                new CreateNotebookModal(this.app, this.plugin.notebookManager, async (nb) => {
+                    await this.refresh();
+                    if (this.onSelectNotebookHandler) {
+                        this.onSelectNotebookHandler(nb.id);
+                    }
+                }).open();
+            };
+        }
 
         // 既存ノートブックカード群
         for (const nb of filtered) {
-            const card = gridEl.createDiv({ cls: 'ai-notebook-card' });
+            const isMine = nb.userName === currentUser;
+            const isLegacy = !nb.userName;
+            const isOthers = !isMine && !isLegacy;
+
+            const card = gridEl.createDiv({ cls: `ai-notebook-card ${isMine ? 'is-my-territory' : 'is-shared-territory'}` });
             
             // カードヘッダー
             const cardHeader = card.createDiv({ cls: 'ai-notebook-card-header' });
-            const cardIcon = cardHeader.createDiv({ cls: 'ai-notebook-card-icon' });
+            const iconArea = cardHeader.createDiv({ cls: 'ai-notebook-card-icon-area' });
+            const cardIcon = iconArea.createDiv({ cls: 'ai-notebook-card-icon' });
             setIcon(cardIcon, nb.icon || 'book-open');
 
+            // 👤 ユーザー・縄張りバッジ
+            const userBadge = iconArea.createSpan({
+                cls: `ai-notebook-user-badge ${isMine ? 'is-mine' : isLegacy ? 'is-legacy' : 'is-others'}`
+            });
+            if (isMine) {
+                setIcon(userBadge.createSpan({ cls: 'ai-notebook-user-icon' }), 'user');
+                userBadge.createSpan({ text: ' 自分' });
+            } else if (isOthers) {
+                setIcon(userBadge.createSpan({ cls: 'ai-notebook-user-icon' }), 'users');
+                userBadge.createSpan({ text: ` @${nb.userName}` });
+            } else {
+                setIcon(userBadge.createSpan({ cls: 'ai-notebook-user-icon' }), 'globe');
+                userBadge.createSpan({ text: ' 共有' });
+            }
+
             const cardActions = cardHeader.createDiv({ cls: 'ai-notebook-card-actions' });
-            const deleteBtn = cardActions.createEl('button', { cls: 'ai-notebook-card-delete-btn' });
-            setIcon(deleteBtn, 'trash-2');
-            deleteBtn.setAttribute('title', '削除');
-            deleteBtn.onclick = async (e) => {
-                e.stopPropagation();
-                if (confirm(`ノートブック "${nb.title}" を削除してもよろしいですか？`)) {
-                    await this.plugin.notebookManager.deleteNotebook(nb.id);
-                    await this.refresh();
-                }
-            };
+
+            // 他人ノートブックの場合：フォークボタン
+            if (isOthers) {
+                const forkBtn = cardActions.createEl('button', { cls: 'ai-notebook-card-action-btn' });
+                setIcon(forkBtn, 'git-fork');
+                forkBtn.setAttribute('title', '自分の縄張りにフォークして複製');
+                forkBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    if (confirm(`ノートブック "${nb.title}" を自分の縄張りにフォークしますか？`)) {
+                        const forked = await this.plugin.notebookManager.forkNotebook(nb.id);
+                        await this.refresh();
+                        if (this.onSelectNotebookHandler) {
+                            this.onSelectNotebookHandler(forked.id);
+                        }
+                    }
+                };
+            }
+
+            // レガシーノートブックの場合：縄張り移行ボタン
+            if (isLegacy) {
+                const migrateBtn = cardActions.createEl('button', { cls: 'ai-notebook-card-action-btn' });
+                setIcon(migrateBtn, 'folder-symlink');
+                migrateBtn.setAttribute('title', '自分の縄張りに移行 (Migrate)');
+                migrateBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    if (confirm(`ノートブック "${nb.title}" を自分の縄張り (users/${currentUser}/) に移行しますか？`)) {
+                        await this.plugin.notebookManager.migrateNotebookToUser(nb.id);
+                        await this.refresh();
+                    }
+                };
+            }
+
+            // 削除ボタン（自分の縄張りまたはレガシーのみ）
+            if (isMine || isLegacy) {
+                const deleteBtn = cardActions.createEl('button', { cls: 'ai-notebook-card-delete-btn' });
+                setIcon(deleteBtn, 'trash-2');
+                deleteBtn.setAttribute('title', '削除');
+                deleteBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    if (confirm(`ノートブック "${nb.title}" を削除してもよろしいですか？`)) {
+                        await this.plugin.notebookManager.deleteNotebook(nb.id);
+                        await this.refresh();
+                    }
+                };
+            }
 
             // タイトル・説明
             card.createEl('h3', { text: nb.title, cls: 'ai-notebook-card-title' });
