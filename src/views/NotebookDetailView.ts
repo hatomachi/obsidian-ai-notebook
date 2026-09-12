@@ -8,6 +8,7 @@ import { BindFolderModal } from './modals/BindFolderModal';
 import { TextInputModal } from './modals/TextInputModal';
 import { MattermostModal } from './modals/MattermostModal';
 import { ImagePreviewModal } from './modals/ImagePreviewModal';
+import { RemoteMarkdownModal } from './modals/RemoteMarkdownModal';
 import { BoundFolderReader } from '../services/BoundFolderReader';
 import { AgentFactory } from '../adapters/AgentFactory';
 import { DebugFolderHelper } from '../utils/debugFolderHelper';
@@ -157,17 +158,25 @@ export class AINotebookDetailView extends ItemView {
         titleArea.createEl('h2', { text: this.metadata.title, cls: 'ai-notebook-detail-title' });
 
         const currentUser = this.plugin.notebookManager.getEffectiveUsername();
-        const isMine = !this.metadata.userName || this.metadata.userName === currentUser;
-        const isLegacy = !this.metadata.userName;
+        const isRemote = !!this.metadata.isRemote;
+        const isMine = !isRemote && (!this.metadata.userName || this.metadata.userName === currentUser);
+        const isLegacy = !isRemote && !this.metadata.userName;
+        const isOthers = !isMine && !isLegacy;
 
-        // 👤 ユーザー・縄張りバッジ
+        // 👤 ユーザー・縄張りバッジ（クラウド時は水色バッジ＋クラウド表記）
         const userBadge = titleArea.createSpan({
-            cls: `ai-notebook-user-badge ${isMine && !isLegacy ? 'is-mine' : isLegacy ? 'is-legacy' : 'is-others'}`
+            cls: `ai-notebook-user-badge ${isRemote ? 'is-remote' : isMine ? 'is-mine' : isLegacy ? 'is-legacy' : 'is-others'}`
         });
-        if (isMine && !isLegacy) {
+        if (isRemote) {
+            setIcon(userBadge.createSpan({ cls: 'ai-notebook-user-icon' }), 'cloud');
+            const suffix = this.metadata.userName === currentUser
+                ? ' 自分 (クラウド)'
+                : this.metadata.userName ? ` @${this.metadata.userName} (クラウド)` : ' 共有 (クラウド)';
+            userBadge.createSpan({ text: suffix });
+        } else if (isMine) {
             setIcon(userBadge.createSpan({ cls: 'ai-notebook-user-icon' }), 'user');
             userBadge.createSpan({ text: ' 自分' });
-        } else if (!isLegacy) {
+        } else if (isOthers) {
             setIcon(userBadge.createSpan({ cls: 'ai-notebook-user-icon' }), 'users');
             userBadge.createSpan({ text: ` @${this.metadata.userName}` });
         } else {
@@ -177,14 +186,34 @@ export class AINotebookDetailView extends ItemView {
 
         const headerRight = header.createDiv({ cls: 'ai-notebook-header-right' });
 
-        // 他人の縄張りの場合：フォークボタン
-        if (!isMine) {
+        // 自分のローカルノートブック：☁️ GitLab に保存ボタン
+        if (isMine && !isRemote) {
+            const pushBtn = headerRight.createEl('button', {
+                cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-xs',
+                text: '☁️ GitLabに保存'
+            });
+            pushBtn.onclick = async () => {
+                if (!this.notebookId) return;
+                new Notice('☁️ GitLab に保存中...');
+                const res = await this.plugin.notebookManager.pushNotebookToGitLab(this.notebookId);
+                if (res.success) {
+                    new Notice('✅ GitLab への保存が完了しました！');
+                    await this.setNotebookId(this.notebookId);
+                } else {
+                    new Notice(`❌ 保存失敗: ${res.error || '不明なエラー'}`);
+                }
+            };
+        }
+
+        // 他人の縄張りまたはクラウドノートブックの場合：フォークボタン
+        if (!isMine || isRemote) {
             const forkBtn = headerRight.createEl('button', {
                 cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-xs',
-                text: '🍴 自分の縄張りにフォーク'
+                text: isRemote ? '🍴 自分の縄張りにフォーク' : '🍴 自分の縄張りにフォーク'
             });
             forkBtn.onclick = async () => {
                 if (!this.notebookId) return;
+                new Notice(`フォーク中: "${this.metadata?.title}"...`);
                 const forked = await this.plugin.notebookManager.forkNotebook(this.notebookId);
                 new Notice(`ノートブックを自分の縄張りにフォークしました: ${forked.title}`);
                 await this.setNotebookId(forked.id);
@@ -196,8 +225,28 @@ export class AINotebookDetailView extends ItemView {
         const agentName = this.plugin.settings.activeAgent === 'antigravity' ? 'Antigravity CLI' : 'Claude Code CLI';
         agentBadge.createSpan({ text: ` ${agentName}` });
 
-        // 他人の縄張りの場合：閲覧モード注意喚起バナー
-        if (!isMine) {
+        // ☁️ クラウド閲覧モード注意喚起バナー
+        if (isRemote) {
+            const banner = container.createDiv({ cls: 'ai-notebook-cloud-warning-banner' });
+            const bannerIcon = banner.createSpan({ cls: 'ai-notebook-banner-icon' });
+            setIcon(bannerIcon, 'cloud');
+            banner.createSpan({
+                text: ` このノートブックは GitLab リポジトリ上の共有データです（クラウド閲覧モード）。ローカル容量を消費せずオンデマンドで参照しています。編集やAI対話を行うには「自分の縄張りにフォーク」してください。`,
+                cls: 'ai-notebook-banner-text'
+            });
+            const bannerForkBtn = banner.createEl('button', {
+                cls: 'ai-notebook-btn ai-notebook-btn-primary ai-notebook-btn-xs',
+                text: '🍴 フォークして実体化'
+            });
+            bannerForkBtn.onclick = async () => {
+                if (!this.notebookId) return;
+                new Notice(`フォーク中: "${this.metadata?.title}"...`);
+                const forked = await this.plugin.notebookManager.forkNotebook(this.notebookId);
+                new Notice(`フォークしました: ${forked.title}`);
+                await this.setNotebookId(forked.id);
+            };
+        } else if (!isMine) {
+            // 他人の縄張りの場合：閲覧モード注意喚起バナー
             const banner = container.createDiv({ cls: 'ai-notebook-territory-warning-banner' });
             const bannerIcon = banner.createSpan({ cls: 'ai-notebook-banner-icon' });
             setIcon(bannerIcon, 'info');
@@ -577,15 +626,27 @@ export class AINotebookDetailView extends ItemView {
                 const isImageSource = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(effectiveExt)
                     || /\.(png|jpg|jpeg|webp|gif|bmp)(\.md)?$/i.test(src.name);
 
-                // アイテムクリック: 画像ならプレビューモーダル、文書ならエディタで開く
+                // アイテムクリック: 画像ならプレビューモーダル、リモートならRemoteMarkdownModal、文書ならエディタで開く
                 item.onclick = async () => {
                     if (isImageSource) {
                         new ImagePreviewModal(this.app, this.plugin, src).open();
+                    } else if (this.metadata?.isRemote) {
+                        new RemoteMarkdownModal(
+                            this.app,
+                            this.plugin.notebookManager,
+                            this.notebookId!,
+                            src.name,
+                            src.path,
+                            async () => {
+                                const forked = await this.plugin.notebookManager.forkNotebook(this.notebookId!);
+                                await this.setNotebookId(forked.id);
+                            }
+                        ).open();
                     } else {
                         await DebugFolderHelper.openInEditor(this.app, src.path);
                     }
                 };
-                item.setAttribute('title', isImageSource ? `クリックで画像プレビューを表示: ${src.name}` : `クリックでObsidianエディタで開く: ${src.path}`);
+                item.setAttribute('title', isImageSource ? `クリックで画像プレビューを表示: ${src.name}` : `クリックで内容をプレビュー: ${src.path}`);
 
                 const iconSpan = item.createSpan({ cls: 'ai-notebook-source-icon' });
                 setIcon(iconSpan, this.getFileIcon(effectiveExt));
@@ -1006,16 +1067,35 @@ export class AINotebookDetailView extends ItemView {
 
         // 入力フォーム
         const inputArea = panel.createDiv({ cls: 'ai-notebook-chat-input-area' });
+        const isRemote = !!this.metadata?.isRemote;
+
         const textarea = inputArea.createEl('textarea', {
-            placeholder: this.isExecuting
-                ? 'AIエージェントが実行中です... 完了するか中止するまでお待ちください'
-                : (this.linkedNotebooks.length > 0
-                    ? '参照コンテキストをもとにドキュメント作成・修正・レビュー指示...'
-                    : 'インプットをもとに会話・成果物作成指示...'),
+            placeholder: isRemote
+                ? '☁️ クラウド閲覧モードです。AI対話や編集を行うには「自分の縄張りにフォーク」してください'
+                : this.isExecuting
+                    ? 'AIエージェントが実行中です... 完了するか中止するまでお待ちください'
+                    : (this.linkedNotebooks.length > 0
+                        ? '参照コンテキストをもとにドキュメント作成・修正・レビュー指示...'
+                        : 'インプットをもとに会話・成果物作成指示...'),
             cls: 'ai-notebook-chat-textarea'
         });
 
-        if (this.isExecuting) {
+        if (isRemote) {
+            textarea.disabled = true;
+            textarea.addClass('is-disabled');
+
+            const forkBtn = inputArea.createEl('button', { cls: 'ai-notebook-btn ai-notebook-btn-primary' });
+            setIcon(forkBtn, 'git-fork');
+            forkBtn.createSpan({ text: ' フォーク' });
+            forkBtn.setAttribute('title', '自分の縄張りにフォークしてAI対話を開始');
+            forkBtn.onclick = async () => {
+                if (!this.notebookId) return;
+                new Notice(`フォーク中: "${this.metadata?.title}"...`);
+                const forked = await this.plugin.notebookManager.forkNotebook(this.notebookId);
+                new Notice(`フォークしました: ${forked.title}`);
+                await this.setNotebookId(forked.id);
+            };
+        } else if (this.isExecuting) {
             textarea.disabled = true;
             textarea.addClass('is-disabled');
 
@@ -1194,29 +1274,32 @@ export class AINotebookDetailView extends ItemView {
         const panelHeader = panel.createDiv({ cls: 'ai-notebook-panel-header' });
         panelHeader.createEl('h3', { text: '成果物 (Artifacts)' });
 
+        const isRemote = !!this.metadata?.isRemote;
         const headerActions = panelHeader.createDiv({ cls: 'ai-notebook-panel-header-actions' });
         
-        // 手動成果物追加ボタン
-        const addBtn = headerActions.createEl('button', { cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-icon-only' });
-        setIcon(addBtn, 'plus');
-        addBtn.setAttribute('title', '新規成果物メモ作成');
-        addBtn.onclick = async () => {
-            if (!this.notebookId) return;
-            new TextInputModal(
-                this.app,
-                '📄 新規成果物メモの作成',
-                '新しいメモ',
-                async (title) => {
-                    if (!this.notebookId) return;
-                    const file = await this.plugin.notebookManager.addArtifactFile(this.notebookId, title, `# ${title}\n\n`);
-                    await this.refresh();
-                    new ArtifactModal(this.app, this.plugin.notebookManager, this.notebookId, file, async () => {
+        // 手動成果物追加ボタン（ローカルノートブックのみ）
+        if (!isRemote) {
+            const addBtn = headerActions.createEl('button', { cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-icon-only' });
+            setIcon(addBtn, 'plus');
+            addBtn.setAttribute('title', '新規成果物メモ作成');
+            addBtn.onclick = async () => {
+                if (!this.notebookId) return;
+                new TextInputModal(
+                    this.app,
+                    '📄 新規成果物メモの作成',
+                    '新しいメモ',
+                    async (title) => {
+                        if (!this.notebookId) return;
+                        const file = await this.plugin.notebookManager.addArtifactFile(this.notebookId, title, `# ${title}\n\n`);
                         await this.refresh();
-                    }).open();
-                },
-                { placeholder: '成果物のタイトルを入力' }
-            ).open();
-        };
+                        new ArtifactModal(this.app, this.plugin.notebookManager, this.notebookId, file, async () => {
+                            await this.refresh();
+                        }).open();
+                    },
+                    { placeholder: '成果物のタイトルを入力' }
+                ).open();
+            };
+        }
 
         // 成果物カード一覧
         const artifactList = panel.createDiv({ cls: 'ai-notebook-artifact-list' });
@@ -1252,6 +1335,18 @@ export class AINotebookDetailView extends ItemView {
                                 await this.refresh();
                             },
                             this.isExecuting
+                        ).open();
+                    } else if (isRemote) {
+                        new RemoteMarkdownModal(
+                            this.app,
+                            this.plugin.notebookManager,
+                            this.notebookId,
+                            art.title,
+                            art.path,
+                            async () => {
+                                const forked = await this.plugin.notebookManager.forkNotebook(this.notebookId!);
+                                await this.setNotebookId(forked.id);
+                            }
                         ).open();
                     }
                 };

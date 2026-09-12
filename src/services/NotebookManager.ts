@@ -1,5 +1,5 @@
 import { App, TFile, TFolder, parseYaml, stringifyYaml, normalizePath, FileSystemAdapter } from 'obsidian';
-import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AINotebookSettings, SystemKnowledge, DocumentTemplate, SourceOrigin, TranscriptionErrorEntry, MattermostChannelRef, AddSourceResult } from '../types';
+import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AINotebookSettings, SystemKnowledge, DocumentTemplate, SourceOrigin, TranscriptionErrorEntry, MattermostChannelRef, AddSourceResult, GitLabTreeItem, GitLabCommitAction } from '../types';
 import { TranscriptionService } from './transcription/TranscriptionService';
 import { BoundFolderReader } from './BoundFolderReader';
 import { ImageCompressor } from './ImageCompressor';
@@ -21,6 +21,8 @@ export class NotebookManager {
     settings: AINotebookSettings;
     gitlabService?: GitLabService;
     private locationCache: Map<string, NotebookLocation> = new Map();
+    private remoteNotebooksCache: Map<string, NotebookMetadata> = new Map();
+    private remoteTreeCache: Map<string, GitLabTreeItem[]> = new Map();
 
     constructor(app: App, settings: AINotebookSettings, gitlabService?: GitLabService) {
         this.app = app;
@@ -637,7 +639,125 @@ export class NotebookManager {
     }
 
     /**
-     * 全ノートブックのメタデータ一覧を取得（全ユーザーの縄張り＋既存レガシー領域を集約）
+     * Markdown コンテンツ（frontmatter付き）から NotebookMetadata を生成
+     */
+    parseNotebookMetadataContent(
+        content: string,
+        defaultUserName?: string,
+        fileStat?: { ctime?: number; mtime?: number }
+    ): NotebookMetadata | null {
+        const match = content.match(/^---\r?\n([\s\S]*?)(?:\r?\n)?---(?:\r?\n|$)/);
+        if (!match) return null;
+
+        const yaml = parseYaml(match[1]);
+        if (!yaml || !yaml.notebook_id) return null;
+
+        const defaultTime = new Date().toISOString();
+        return {
+            id: yaml.notebook_id,
+            title: yaml.title || '名称未設定ノートブック',
+            createdAt: yaml.created_at || (fileStat?.ctime ? new Date(fileStat.ctime).toISOString() : defaultTime),
+            updatedAt: yaml.updated_at || (fileStat?.mtime ? new Date(fileStat.mtime).toISOString() : defaultTime),
+            tags: yaml.tags || [],
+            icon: yaml.icon || 'book-open',
+            description: yaml.description || '',
+            userName: yaml.user_name || yaml.userName || defaultUserName || undefined,
+            linkedNotebookIds: yaml.linked_notebook_ids || yaml.linkedNotebookIds || [],
+            activeSessionId: yaml.active_session_id || yaml.activeSessionId || undefined,
+            boundFolderPath: yaml.bound_folder_path || yaml.boundFolderPath || undefined,
+            boundMmChannels: yaml.bound_mm_channels || yaml.boundMmChannels || [],
+            gitlabServerId: yaml.gitlab_server_id || yaml.gitlabServerId || undefined,
+            gitlabProjectId: yaml.gitlab_project_id || yaml.gitlabProjectId || undefined,
+            syncedAt: yaml.synced_at || yaml.syncedAt || undefined,
+            systemId: yaml.system_id || undefined,
+            templateId: yaml.template_id || undefined
+        };
+    }
+
+    /**
+     * GitLab リポジトリからリモートノートブック一覧をオンデマンド取得
+     */
+    async fetchRemoteNotebooks(force: boolean = false): Promise<NotebookMetadata[]> {
+        if (!this.gitlabService) return [];
+        const servers = this.gitlabService.getServers();
+        if (servers.length === 0) return [];
+
+        const remoteNotebooks: NotebookMetadata[] = [];
+        const rootDir = (this.settings.rootDir || '_ainotebook').replace(/^\/+|\/+$/g, '');
+
+        for (const server of servers) {
+            if (!this.gitlabService.isConfigured(server.id)) continue;
+            const projectId = server.defaultProjectId;
+            if (!projectId?.trim()) continue;
+
+            const cacheKey = `${server.id}:${projectId}`;
+            let tree: GitLabTreeItem[] | undefined = !force ? this.remoteTreeCache.get(cacheKey) : undefined;
+
+            try {
+                if (!tree) {
+                    tree = await this.gitlabService.listRepositoryTree({
+                        serverId: server.id,
+                        projectId,
+                        path: rootDir,
+                        recursive: true
+                    });
+                    this.remoteTreeCache.set(cacheKey, tree);
+                }
+
+                // ツリーから index/*.md を抽出
+                // 1. users/<uName>/index/<id>.md
+                // 2. index/<id>.md
+                for (const item of tree) {
+                    if (item.type !== 'blob' || !item.name.endsWith('.md')) continue;
+
+                    let matchedUser: string | undefined = undefined;
+                    let matchedId: string | undefined = undefined;
+
+                    const userMatch = item.path.match(/(?:^|\/)users\/([^\/]+)\/index\/([^\/]+)\.md$/i);
+                    if (userMatch) {
+                        matchedUser = userMatch[1];
+                        matchedId = userMatch[2];
+                    } else {
+                        const legacyMatch = item.path.match(/(?:^|\/)index\/([^\/]+)\.md$/i);
+                        if (legacyMatch) {
+                            matchedId = legacyMatch[1];
+                        }
+                    }
+
+                    if (matchedId) {
+                        try {
+                            const rawContent = await this.gitlabService.getFileRaw(item.path, {
+                                serverId: server.id,
+                                projectId,
+                                ref: server.defaultBranch || 'main'
+                            });
+
+                            const meta = this.parseNotebookMetadataContent(rawContent, matchedUser);
+                            if (meta) {
+                                meta.isRemote = true;
+                                meta.remoteServerId = server.id;
+                                if (!meta.gitlabServerId) meta.gitlabServerId = server.id;
+                                if (!meta.gitlabProjectId) meta.gitlabProjectId = projectId;
+                                if (matchedUser && !meta.userName) meta.userName = matchedUser;
+
+                                this.remoteNotebooksCache.set(meta.id, meta);
+                                remoteNotebooks.push(meta);
+                            }
+                        } catch (fileErr) {
+                            console.warn(`[NotebookManager] Failed to fetch raw index file: ${item.path}`, fileErr);
+                        }
+                    }
+                }
+            } catch (err) {
+                console.warn(`[NotebookManager] Failed to list tree for server ${server.name}:`, err);
+            }
+        }
+
+        return remoteNotebooks;
+    }
+
+    /**
+     * 全ノートブックのメタデータ一覧を取得（全ユーザーの縄張り＋既存レガシー領域＋GitLab共有を集約）
      */
     async getAllNotebooks(): Promise<NotebookMetadata[]> {
         await this.ensureBaseDirectories();
@@ -701,6 +821,19 @@ export class NotebookManager {
             }
         }
 
+        // 3. 🦊 GitLab API 経由でのリモートノートブック一覧取得＆マージ
+        try {
+            const remoteNotebooks = await this.fetchRemoteNotebooks();
+            for (const rMeta of remoteNotebooks) {
+                // ローカルに既に存在する ID はローカル版を優先（上書きしない）
+                if (!notebooksMap.has(rMeta.id)) {
+                    notebooksMap.set(rMeta.id, rMeta);
+                }
+            }
+        } catch (remoteErr) {
+            console.warn('[NotebookManager] Failed to fetch remote notebooks from GitLab:', remoteErr);
+        }
+
         const notebooks = Array.from(notebooksMap.values());
         // 更新日時の降順でソート
         return notebooks.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
@@ -711,34 +844,14 @@ export class NotebookManager {
      */
     private async readNotebookMetadata(file: TFile, defaultUserName?: string): Promise<NotebookMetadata | null> {
         const content = await this.app.vault.read(file);
-        const match = content.match(/^---\n([\s\S]*?)\n---/);
-        if (!match) return null;
-
-        const yaml = parseYaml(match[1]);
-        if (!yaml || !yaml.notebook_id) return null;
-
-        return {
-            id: yaml.notebook_id,
-            title: yaml.title || file.basename,
-            createdAt: yaml.created_at || new Date(file.stat.ctime).toISOString(),
-            updatedAt: yaml.updated_at || new Date(file.stat.mtime).toISOString(),
-            tags: yaml.tags || [],
-            icon: yaml.icon || 'book-open',
-            description: yaml.description || '',
-            userName: yaml.user_name || yaml.userName || defaultUserName || undefined,
-            linkedNotebookIds: yaml.linked_notebook_ids || yaml.linkedNotebookIds || [],
-            activeSessionId: yaml.active_session_id || yaml.activeSessionId || undefined,
-            boundFolderPath: yaml.bound_folder_path || yaml.boundFolderPath || undefined,
-            boundMmChannels: yaml.bound_mm_channels || yaml.boundMmChannels || [],
-            gitlabServerId: yaml.gitlab_server_id || yaml.gitlabServerId || undefined,
-            gitlabProjectId: yaml.gitlab_project_id || yaml.gitlabProjectId || undefined,
-            systemId: yaml.system_id || undefined,
-            templateId: yaml.template_id || undefined
-        };
+        return this.parseNotebookMetadataContent(content, defaultUserName, {
+            ctime: file.stat.ctime,
+            mtime: file.stat.mtime
+        });
     }
 
     /**
-     * ID からノートブックメタデータを取得
+     * ID からノートブックメタデータを取得（ローカル優先、なければリモートキャッシュまたはGitLabから）
      */
     async getNotebookMetadata(id: string): Promise<NotebookMetadata | null> {
         const indexPath = await this.getNotebookIndexPath(id);
@@ -747,7 +860,30 @@ export class NotebookManager {
             const loc = await this.resolveNotebookLocation(id);
             return await this.readNotebookMetadata(file, loc.userName);
         }
+
+        // ローカルに存在しない場合：リモートキャッシュを探索
+        if (this.remoteNotebooksCache.has(id)) {
+            return this.remoteNotebooksCache.get(id)!;
+        }
+
+        // キャッシュにない場合：GitLab リモート一覧を再取得して探索
+        try {
+            const remoteNotebooks = await this.fetchRemoteNotebooks();
+            const found = remoteNotebooks.find(nb => nb.id === id);
+            if (found) return found;
+        } catch (e) {
+            console.warn(`[NotebookManager] getNotebookMetadata failed for remote id ${id}:`, e);
+        }
+
         return null;
+    }
+
+    /**
+     * 指定されたノートブックが GitLab 上のリモートノートブック（ローカル未実体化）か判定
+     */
+    async isRemoteNotebook(id: string): Promise<boolean> {
+        const meta = await this.getNotebookMetadata(id);
+        return !!meta?.isRemote;
     }
 
     /**
@@ -784,6 +920,7 @@ export class NotebookManager {
         if (updated.boundMmChannels !== undefined) frontmatterObj.bound_mm_channels = updated.boundMmChannels;
         if (updated.gitlabServerId) frontmatterObj.gitlab_server_id = updated.gitlabServerId;
         if (updated.gitlabProjectId) frontmatterObj.gitlab_project_id = updated.gitlabProjectId;
+        if (updated.syncedAt) frontmatterObj.synced_at = updated.syncedAt;
         if (updated.systemId) frontmatterObj.system_id = updated.systemId;
         if (updated.templateId) frontmatterObj.template_id = updated.templateId;
 
@@ -791,7 +928,7 @@ export class NotebookManager {
 
         // 本文（Frontmatter以降）を維持しつつフロントマターのみ置換
         const content = await this.app.vault.read(file);
-        const body = content.replace(/^---\n[\s\S]*?\n---\n?/, '');
+        const body = content.replace(/^---\r?\n[\s\S]*?(?:\r?\n)?---\r?\n?/, '');
         const newContent = `---\n${frontmatter}---\n${body}`;
 
         await this.app.vault.modify(file, newContent);
@@ -952,6 +1089,11 @@ export class NotebookManager {
             throw new Error(`フォーク元ノートブックが見つかりません: ${id}`);
         }
 
+        // ☁️ GitLab 上のリモートノートブックの場合はクラウドフォークへ委譲
+        if (sourceMeta.isRemote) {
+            return await this.forkRemoteNotebook(id, newTitle);
+        }
+
         const sourceLoc = await this.resolveNotebookLocation(id);
         const newId = this.generateNotebookId();
         const currentUser = this.getEffectiveUsername();
@@ -1007,6 +1149,252 @@ export class NotebookManager {
         });
 
         return newMeta;
+    }
+
+    /**
+     * GitLab 上のリモートノートブックをダウンロードし、自分の縄張りに実体化（フォーク）
+     */
+    async forkRemoteNotebook(id: string, newTitle?: string): Promise<NotebookMetadata> {
+        const sourceMeta = await this.getNotebookMetadata(id);
+        if (!sourceMeta) {
+            throw new Error(`フォーク元リモートノートブックが見つかりません: ${id}`);
+        }
+        if (!this.gitlabService) {
+            throw new Error('GitLab サービスが初期化されていません。');
+        }
+
+        const server = this.gitlabService.getServer(sourceMeta.remoteServerId || sourceMeta.gitlabServerId);
+        if (!server || !this.gitlabService.isConfigured(server.id)) {
+            throw new Error('GitLab サーバーが設定されていないか、利用できません。');
+        }
+
+        const projectId = sourceMeta.gitlabProjectId || server.defaultProjectId;
+        if (!projectId?.trim()) {
+            throw new Error('GitLab プロジェクトIDが設定されていません。');
+        }
+
+        const newId = this.generateNotebookId();
+        const currentUser = this.getEffectiveUsername();
+        const now = new Date().toISOString();
+        const title = newTitle?.trim() || `[フォーク] ${sourceMeta.title}`;
+
+        const root = normalizePath(this.settings.rootDir);
+        const userBase = normalizePath(`${root}/users/${currentUser}`);
+        await this.ensureFolder(userBase);
+        await this.ensureFolder(normalizePath(`${userBase}/index`));
+        await this.ensureFolder(normalizePath(`${userBase}/notebooks`));
+
+        const targetNotebookDir = normalizePath(`${userBase}/notebooks/${newId}`);
+        const targetIndexPath = normalizePath(`${userBase}/index/${newId}.md`);
+        await this.ensureFolder(targetNotebookDir);
+        await this.ensureFolder(normalizePath(`${targetNotebookDir}/sources`));
+        await this.ensureFolder(normalizePath(`${targetNotebookDir}/artifacts`));
+        await this.ensureFolder(normalizePath(`${targetNotebookDir}/sessions`));
+
+        // リモートのツリー構造を取得
+        const cacheKey = `${server.id}:${projectId}`;
+        let tree = this.remoteTreeCache.get(cacheKey);
+        if (!tree) {
+            tree = await this.gitlabService.listRepositoryTree({
+                serverId: server.id,
+                projectId,
+                path: root,
+                recursive: true
+            });
+            this.remoteTreeCache.set(cacheKey, tree);
+        }
+
+        // リモートノートブックのディレクトリプレフィックス
+        const remotePrefix = sourceMeta.userName
+            ? `${root}/users/${sourceMeta.userName}/notebooks/${id}/`
+            : `${root}/notebooks/${id}/`;
+
+        // prefix 配下の全ファイルをダウンロードしてローカルに書き込む
+        for (const item of tree) {
+            if (item.type !== 'blob') continue;
+            if (!item.path.startsWith(remotePrefix)) continue;
+
+            const relativePath = item.path.substring(remotePrefix.length);
+            const targetFilePath = normalizePath(`${targetNotebookDir}/${relativePath}`);
+            await this.ensureFolder(path.dirname(targetFilePath).replace(/\\/g, '/'));
+
+            try {
+                const isBinary = /\.(png|jpg|jpeg|webp|gif|bmp|pdf|xlsx|xls|pptx|docx|zip|tar|gz)$/i.test(item.name);
+                if (isBinary) {
+                    const binData = await this.gitlabService.downloadRepositoryFile(item.path, {
+                        serverId: server.id,
+                        projectId,
+                        ref: server.defaultBranch || 'main'
+                    });
+                    await this.safeCreateOrModifyBinary(targetFilePath, binData);
+                } else {
+                    const textData = await this.gitlabService.getFileRaw(item.path, {
+                        serverId: server.id,
+                        projectId,
+                        ref: server.defaultBranch || 'main'
+                    });
+                    await this.safeCreateOrModify(targetFilePath, textData);
+                }
+            } catch (dlErr) {
+                console.warn(`[NotebookManager] Failed to download remote notebook file: ${item.path}`, dlErr);
+            }
+        }
+
+        // 新規メタデータの生成
+        const newMeta: NotebookMetadata = {
+            ...sourceMeta,
+            id: newId,
+            title,
+            createdAt: now,
+            updatedAt: now,
+            userName: currentUser,
+            isRemote: false,
+            remoteServerId: undefined,
+            syncedAt: undefined
+        };
+
+        const frontmatterObj: Record<string, any> = {
+            notebook_id: newMeta.id,
+            title: newMeta.title,
+            created_at: newMeta.createdAt,
+            updated_at: newMeta.updatedAt,
+            tags: newMeta.tags,
+            icon: newMeta.icon,
+            description: newMeta.description,
+            user_name: currentUser,
+            linked_notebook_ids: newMeta.linkedNotebookIds || [],
+            active_session_id: newMeta.activeSessionId
+        };
+        if (newMeta.boundFolderPath) frontmatterObj.bound_folder_path = newMeta.boundFolderPath;
+        if (newMeta.gitlabServerId) frontmatterObj.gitlab_server_id = newMeta.gitlabServerId;
+        if (newMeta.gitlabProjectId) frontmatterObj.gitlab_project_id = newMeta.gitlabProjectId;
+        if (newMeta.systemId) frontmatterObj.system_id = newMeta.systemId;
+        if (newMeta.templateId) frontmatterObj.template_id = newMeta.templateId;
+
+        const indexContent = `---\n${stringifyYaml(frontmatterObj)}---\n# ${newMeta.title}\n\n${newMeta.description}\n`;
+        await this.safeCreateOrModify(targetIndexPath, indexContent);
+
+        this.locationCache.set(newId, {
+            notebookDir: targetNotebookDir,
+            indexPath: targetIndexPath,
+            userName: currentUser,
+            isLegacy: false
+        });
+
+        return newMeta;
+    }
+
+    /**
+     * 自分のノートブックを GitLab リポジトリへ一括コミット保存（Git push 相当）
+     */
+    async pushNotebookToGitLab(
+        id: string,
+        commitMessage?: string,
+        serverId?: string,
+        projectId?: string
+    ): Promise<{ success: boolean; commitId?: string; error?: string }> {
+        const meta = await this.getNotebookMetadata(id);
+        if (!meta) {
+            return { success: false, error: `ノートブックが見つかりません: ${id}` };
+        }
+        if (!this.gitlabService) {
+            return { success: false, error: 'GitLab サービスが初期化されていません。' };
+        }
+
+        const targetServer = this.gitlabService.getServer(serverId || meta.gitlabServerId);
+        if (!targetServer || !this.gitlabService.isConfigured(targetServer.id)) {
+            return { success: false, error: 'GitLab サーバーが設定されていないか、トークンが未入力です。' };
+        }
+
+        const targetProjectId = projectId || meta.gitlabProjectId || targetServer.defaultProjectId;
+        if (!targetProjectId?.trim()) {
+            return { success: false, error: 'GitLab プロジェクトIDが設定されていません。' };
+        }
+
+        const loc = await this.resolveNotebookLocation(id);
+        const indexFile = this.app.vault.getAbstractFileByPath(loc.indexPath);
+        if (!(indexFile instanceof TFile)) {
+            return { success: false, error: `インデックスファイルが見つかりません: ${loc.indexPath}` };
+        }
+
+        const notebookFolder = this.app.vault.getAbstractFileByPath(loc.notebookDir);
+        if (!(notebookFolder instanceof TFolder)) {
+            return { success: false, error: `ノートブックフォルダが見つかりません: ${loc.notebookDir}` };
+        }
+
+        // リポジトリの現存ツリーを取得して既存ファイルを把握
+        const currentTree = await this.gitlabService.listRepositoryTree({
+            serverId: targetServer.id,
+            projectId: targetProjectId,
+            path: this.settings.rootDir || '_ainotebook',
+            recursive: true
+        });
+        const existingPaths = new Set(currentTree.map(t => t.path));
+
+        // ローカルファイルを全列挙
+        const filesToCommit: TFile[] = [indexFile];
+        const collectFiles = (folder: TFolder) => {
+            for (const child of folder.children) {
+                if (child instanceof TFile) {
+                    // .DS_Store や一時キャッシュ（.cache/）は除外
+                    if (child.name === '.DS_Store' || child.path.includes('/.cache/')) continue;
+                    filesToCommit.push(child);
+                } else if (child instanceof TFolder) {
+                    if (child.name === '.cache') continue;
+                    collectFiles(child);
+                }
+            }
+        };
+        collectFiles(notebookFolder);
+
+        // CommitAction リストを生成
+        const actions: GitLabCommitAction[] = [];
+        for (const file of filesToCommit) {
+            const isText = /\.(md|json|txt|yaml|yml|js|ts|css|html|sh)$/i.test(file.name);
+            const actionType = existingPaths.has(file.path) ? 'update' : 'create';
+
+            if (isText) {
+                const text = await this.app.vault.read(file);
+                actions.push({
+                    action: actionType,
+                    file_path: file.path,
+                    content: text,
+                    encoding: 'text'
+                });
+            } else {
+                const bin = await this.app.vault.readBinary(file);
+                const b64 = Buffer.from(bin).toString('base64');
+                actions.push({
+                    action: actionType,
+                    file_path: file.path,
+                    content: b64,
+                    encoding: 'base64'
+                });
+            }
+        }
+
+        const msg = commitMessage?.trim() || `chore(notebook): sync "${meta.title}" (${id}) to GitLab`;
+        const res = await this.gitlabService.commitFiles({
+            actions,
+            commitMessage: msg,
+            serverId: targetServer.id,
+            projectId: targetProjectId,
+            branch: targetServer.defaultBranch || 'main'
+        });
+
+        if (res.success) {
+            // 同期成功時、メタデータに syncedAt と gitlab 情報を記録
+            const now = new Date().toISOString();
+            await this.updateNotebookMetadata(id, {
+                syncedAt: now,
+                gitlabServerId: targetServer.id,
+                gitlabProjectId: targetProjectId
+            });
+            // リモートツリーキャッシュを無効化（次回最新を取得）
+            this.remoteTreeCache.delete(`${targetServer.id}:${targetProjectId}`);
+        }
+
+        return res;
     }
 
     /**
@@ -1146,12 +1534,19 @@ export class NotebookManager {
     }
 
     /**
-     * ソースファイル一覧の取得
+     * ソースファイル一覧の取得（ローカルまたはGitLabオンデマンド）
      */
     async getSources(id: string): Promise<NotebookSource[]> {
         const sourcesDir = await this.getSourcesDir(id);
         const folder = this.app.vault.getAbstractFileByPath(sourcesDir);
-        if (!(folder instanceof TFolder)) return [];
+        if (!(folder instanceof TFolder)) {
+            // ☁️ リモートノートブックのオンデマンドソース一覧取得
+            const meta = await this.getNotebookMetadata(id);
+            if (meta?.isRemote && this.gitlabService) {
+                return await this.getRemoteSources(meta);
+            }
+            return [];
+        }
 
         const originsMap = await this.readSourcesOrigins(id);
         const errorsMap = await this.readTranscriptionErrors(id);
@@ -1187,6 +1582,64 @@ export class NotebookManager {
                     transcriptionError
                 });
             }
+        }
+        return sources;
+    }
+
+    /**
+     * GitLab リポジトリ上のリモートソース一覧を取得
+     */
+    private async getRemoteSources(meta: NotebookMetadata): Promise<NotebookSource[]> {
+        if (!this.gitlabService) return [];
+        const server = this.gitlabService.getServer(meta.remoteServerId || meta.gitlabServerId);
+        if (!server || !this.gitlabService.isConfigured(server.id)) return [];
+
+        const projectId = meta.gitlabProjectId || server.defaultProjectId;
+        if (!projectId?.trim()) return [];
+
+        const root = (this.settings.rootDir || '_ainotebook').replace(/^\/+|\/+$/g, '');
+        const remotePrefix = meta.userName
+            ? `${root}/users/${meta.userName}/notebooks/${meta.id}/sources/`
+            : `${root}/notebooks/${meta.id}/sources/`;
+
+        const cacheKey = `${server.id}:${projectId}`;
+        let tree = this.remoteTreeCache.get(cacheKey);
+        if (!tree) {
+            tree = await this.gitlabService.listRepositoryTree({
+                serverId: server.id,
+                projectId,
+                path: root,
+                recursive: true
+            });
+            this.remoteTreeCache.set(cacheKey, tree);
+        }
+
+        const sources: NotebookSource[] = [];
+        for (const item of tree) {
+            if (item.type !== 'blob') continue;
+            if (!item.path.startsWith(remotePrefix)) continue;
+            if (item.name.startsWith('.')) continue;
+
+            let convertedFrom: string | undefined = undefined;
+            const docMatch = item.name.match(/^(.+\.(xlsx|xls|xlsm|pptx|docx|pdf))\.md$/i);
+            if (docMatch) {
+                convertedFrom = docMatch[1];
+            } else {
+                const imgMatch = item.name.match(/^(.+\.(png|jpg|jpeg|webp|gif|bmp))\.md$/i);
+                if (imgMatch) {
+                    convertedFrom = imgMatch[1];
+                }
+            }
+
+            const ext = item.name.includes('.') ? item.name.split('.').pop()! : '';
+            sources.push({
+                name: item.name,
+                path: item.path,
+                extension: ext,
+                size: 0,
+                addedAt: meta.updatedAt,
+                convertedFrom
+            });
         }
         return sources;
     }
@@ -1693,12 +2146,19 @@ uploaded_at: "${new Date().toISOString()}"
     }
 
     /**
-     * 成果物一覧の取得
+     * 成果物一覧の取得（ローカルまたはGitLabオンデマンド）
      */
     async getArtifacts(id: string): Promise<NotebookArtifact[]> {
         const artifactsDir = await this.getArtifactsDir(id);
         const folder = this.app.vault.getAbstractFileByPath(artifactsDir);
-        if (!(folder instanceof TFolder)) return [];
+        if (!(folder instanceof TFolder)) {
+            // ☁️ リモートノートブックのオンデマンド成果物一覧取得
+            const meta = await this.getNotebookMetadata(id);
+            if (meta?.isRemote && this.gitlabService) {
+                return await this.getRemoteArtifacts(meta);
+            }
+            return [];
+        }
 
         const artifacts: NotebookArtifact[] = [];
         for (const file of folder.children) {
@@ -1712,6 +2172,52 @@ uploaded_at: "${new Date().toISOString()}"
                     updatedAt: new Date(file.stat.mtime).toISOString()
                 });
             }
+        }
+        return artifacts.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    }
+
+    /**
+     * GitLab リポジトリ上のリモート成果物一覧を取得
+     */
+    private async getRemoteArtifacts(meta: NotebookMetadata): Promise<NotebookArtifact[]> {
+        if (!this.gitlabService) return [];
+        const server = this.gitlabService.getServer(meta.remoteServerId || meta.gitlabServerId);
+        if (!server || !this.gitlabService.isConfigured(server.id)) return [];
+
+        const projectId = meta.gitlabProjectId || server.defaultProjectId;
+        if (!projectId?.trim()) return [];
+
+        const root = (this.settings.rootDir || '_ainotebook').replace(/^\/+|\/+$/g, '');
+        const remotePrefix = meta.userName
+            ? `${root}/users/${meta.userName}/notebooks/${meta.id}/artifacts/`
+            : `${root}/notebooks/${meta.id}/artifacts/`;
+
+        const cacheKey = `${server.id}:${projectId}`;
+        let tree = this.remoteTreeCache.get(cacheKey);
+        if (!tree) {
+            tree = await this.gitlabService.listRepositoryTree({
+                serverId: server.id,
+                projectId,
+                path: root,
+                recursive: true
+            });
+            this.remoteTreeCache.set(cacheKey, tree);
+        }
+
+        const artifacts: NotebookArtifact[] = [];
+        for (const item of tree) {
+            if (item.type !== 'blob' || !item.name.endsWith('.md')) continue;
+            if (!item.path.startsWith(remotePrefix)) continue;
+
+            const title = item.name.replace(/\.md$/i, '');
+            artifacts.push({
+                id: item.name,
+                title,
+                path: item.path,
+                type: 'note',
+                createdAt: meta.createdAt,
+                updatedAt: meta.updatedAt
+            });
         }
         return artifacts.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
     }
@@ -1757,6 +2263,11 @@ uploaded_at: "${new Date().toISOString()}"
      * チャットセッション一覧の取得（旧chat.jsonからの自動移行含む）
      */
     async getChatSessions(notebookId: string): Promise<ChatSessionMetadata[]> {
+        const meta = await this.getNotebookMetadata(notebookId);
+        if (meta?.isRemote && this.gitlabService) {
+            return await this.getRemoteChatSessions(meta);
+        }
+
         const notebookDir = await this.getNotebookDir(notebookId);
         const sessionsDir = await this.getSessionsDir(notebookId);
         await this.ensureFolder(sessionsDir);
@@ -1821,9 +2332,78 @@ uploaded_at: "${new Date().toISOString()}"
     }
 
     /**
-     * 特定セッションの会話データを取得
+     * GitLab リポジトリ上のリモートセッション一覧を取得
+     */
+    private async getRemoteChatSessions(meta: NotebookMetadata): Promise<ChatSessionMetadata[]> {
+        if (!this.gitlabService) return [];
+        const server = this.gitlabService.getServer(meta.remoteServerId || meta.gitlabServerId);
+        if (!server || !this.gitlabService.isConfigured(server.id)) return [];
+
+        const projectId = meta.gitlabProjectId || server.defaultProjectId;
+        if (!projectId?.trim()) return [];
+
+        const root = (this.settings.rootDir || '_ainotebook').replace(/^\/+|\/+$/g, '');
+        const remotePrefix = meta.userName
+            ? `${root}/users/${meta.userName}/notebooks/${meta.id}/sessions/`
+            : `${root}/notebooks/${meta.id}/sessions/`;
+
+        const cacheKey = `${server.id}:${projectId}`;
+        let tree = this.remoteTreeCache.get(cacheKey);
+        if (!tree) {
+            tree = await this.gitlabService.listRepositoryTree({
+                serverId: server.id,
+                projectId,
+                path: root,
+                recursive: true
+            });
+            this.remoteTreeCache.set(cacheKey, tree);
+        }
+
+        const sessions: ChatSessionMetadata[] = [];
+        for (const item of tree) {
+            if (item.type !== 'blob' || !item.name.endsWith('.json')) continue;
+            if (!item.path.startsWith(remotePrefix)) continue;
+
+            const sessionId = item.name.replace(/\.json$/i, '');
+            try {
+                const raw = await this.gitlabService.getFileRaw(item.path, {
+                    serverId: server.id,
+                    projectId,
+                    ref: server.defaultBranch || 'main'
+                });
+                const parsed = JSON.parse(raw);
+                if (parsed && parsed.id) {
+                    sessions.push({
+                        id: parsed.id,
+                        title: parsed.title || 'チャットセッション',
+                        createdAt: parsed.createdAt || meta.createdAt,
+                        updatedAt: parsed.updatedAt || meta.updatedAt,
+                        messageCount: Array.isArray(parsed.messages) ? parsed.messages.length : 0
+                    });
+                    continue;
+                }
+            } catch {}
+
+            sessions.push({
+                id: sessionId,
+                title: 'チャットセッション',
+                createdAt: meta.createdAt,
+                updatedAt: meta.updatedAt,
+                messageCount: 0
+            });
+        }
+        return sessions.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    }
+
+    /**
+     * 特定セッションの会話データを取得（ローカルまたはGitLabオンデマンド）
      */
     async getChatSession(notebookId: string, sessionId: string): Promise<ChatSession | null> {
+        const meta = await this.getNotebookMetadata(notebookId);
+        if (meta?.isRemote && this.gitlabService) {
+            return await this.getRemoteChatSession(meta, sessionId);
+        }
+
         const sessionsDir = await this.getSessionsDir(notebookId);
         const filePath = normalizePath(`${sessionsDir}/${sessionId}.json`);
         const file = this.app.vault.getAbstractFileByPath(filePath);
@@ -1836,6 +2416,63 @@ uploaded_at: "${new Date().toISOString()}"
             }
         }
         return null;
+    }
+
+    /**
+     * GitLab リポジトリ上のリモートセッション会話データを取得
+     */
+    private async getRemoteChatSession(meta: NotebookMetadata, sessionId: string): Promise<ChatSession | null> {
+        if (!this.gitlabService) return null;
+        const server = this.gitlabService.getServer(meta.remoteServerId || meta.gitlabServerId);
+        if (!server || !this.gitlabService.isConfigured(server.id)) return null;
+
+        const projectId = meta.gitlabProjectId || server.defaultProjectId;
+        if (!projectId?.trim()) return null;
+
+        const root = (this.settings.rootDir || '_ainotebook').replace(/^\/+|\/+$/g, '');
+        const remotePrefix = meta.userName
+            ? `${root}/users/${meta.userName}/notebooks/${meta.id}/sessions/`
+            : `${root}/notebooks/${meta.id}/sessions/`;
+
+        const remoteFilePath = `${remotePrefix}${sessionId}.json`;
+        try {
+            const raw = await this.gitlabService.getFileRaw(remoteFilePath, {
+                serverId: server.id,
+                projectId,
+                ref: server.defaultBranch || 'main'
+            });
+            return JSON.parse(raw);
+        } catch (e) {
+            console.warn(`[NotebookManager] Failed to fetch remote chat session: ${remoteFilePath}`, e);
+            return null;
+        }
+    }
+
+    /**
+     * ファイルのテキストコンテンツをオンデマンド取得（ローカルまたはGitLabリモート）
+     */
+    async readTextFileContent(filePath: string, notebookId?: string): Promise<string> {
+        const file = this.app.vault.getAbstractFileByPath(filePath);
+        if (file instanceof TFile) {
+            return await this.app.vault.read(file);
+        }
+
+        if (notebookId && this.gitlabService) {
+            const meta = await this.getNotebookMetadata(notebookId);
+            if (meta?.isRemote) {
+                const server = this.gitlabService.getServer(meta.remoteServerId || meta.gitlabServerId);
+                const projectId = meta.gitlabProjectId || server?.defaultProjectId;
+                if (server && projectId) {
+                    return await this.gitlabService.getFileRaw(filePath, {
+                        serverId: server.id,
+                        projectId,
+                        ref: server.defaultBranch || 'main'
+                    });
+                }
+            }
+        }
+
+        throw new Error(`ファイルが見つかりません: ${filePath}`);
     }
 
     /**

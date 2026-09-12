@@ -31,6 +31,9 @@ export interface NotebookMetadata {
     gitlabServerId?: string; // 🦊 Notebook単位のバインドGitLabサーバーID
     gitlabProjectId?: string; // 🦊 Notebook単位のバインドGitLabプロジェクトID/パス
     userName?: string; // 👤 所有ユーザー名 (縄張りモデル)
+    isRemote?: boolean; // ☁️ GitLab上のリモートノートブック（ローカル未実体化）
+    remoteServerId?: string; // ☁️ リモート保存先GitLabサーバーID
+    syncedAt?: string; // ☁️ 最終GitLab同期日時
     systemId?: string; // 後方互換用
     templateId?: string; // 後方互換用
 }
@@ -251,6 +254,31 @@ export interface GitLabServerConfig {
     baseUrl: string;          // ホストURL (例: "https://gitlab.example.com")
     token: string;            // Personal Access Token / Project Access Token
     defaultProjectId?: string;// デフォルトのプロジェクトID/パス (例: "knowledge/ainotebook-uploads")
+    defaultBranch?: string;   // 同期・参照ブランチ (デフォルト: "main")
+}
+
+export interface GitLabTreeItem {
+    id: string;
+    name: string;
+    type: 'tree' | 'blob';
+    path: string;
+    mode: string;
+}
+
+export interface GitLabCommitAction {
+    action: 'create' | 'delete' | 'move' | 'update' | 'chmod';
+    file_path: string;
+    content?: string;
+    encoding?: 'text' | 'base64';
+    previous_path?: string;
+    execute_filemode?: boolean;
+}
+
+export interface GitLabCommitPayload {
+    branch: string;
+    commit_message: string;
+    actions: GitLabCommitAction[];
+    start_branch?: string;
 }
 
 export interface GitLabUploadResult {

@@ -189,12 +189,23 @@
     border: 1px solid var(--background-modifier-border);
 }
 
+.ai-notebook-user-badge.is-remote {
+    background-color: rgba(30, 144, 255, 0.15);
+    color: #1e90ff;
+    border: 1px solid rgba(30, 144, 255, 0.35);
+}
+
 .ai-notebook-card.is-my-territory {
     border-top: 3px solid var(--interactive-accent);
 }
 
 .ai-notebook-card.is-shared-territory {
     border-top: 3px solid rgba(235, 120, 30, 0.7);
+}
+
+.ai-notebook-card.is-remote-notebook {
+    border-top: 3px solid #1e90ff;
+    border-left: 2px dashed rgba(30, 144, 255, 0.4);
 }
 
 .ai-notebook-card-action-btn {
@@ -237,6 +248,30 @@
 }
 
 .ai-notebook-territory-warning-banner .ai-notebook-banner-text {
+    flex: 1;
+}
+
+/* クラウド閲覧注意喚起バナー */
+.ai-notebook-cloud-warning-banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background-color: rgba(30, 144, 255, 0.1);
+    border: 1px solid rgba(30, 144, 255, 0.3);
+    padding: 8px 16px;
+    border-radius: 8px;
+    margin: 0 48px 16px 48px;
+    font-size: 0.88rem;
+    color: var(--text-normal);
+}
+
+.ai-notebook-cloud-warning-banner .ai-notebook-banner-icon {
+    display: flex;
+    align-items: center;
+    color: #1e90ff;
+}
+
+.ai-notebook-cloud-warning-banner .ai-notebook-banner-text {
     flex: 1;
 }
 

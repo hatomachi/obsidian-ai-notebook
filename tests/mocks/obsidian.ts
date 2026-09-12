@@ -48,7 +48,7 @@ export function stringifyYaml(o: any): string {
     if (!o) return '';
     return Object.entries(o)
         .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
-        .join('\n');
+        .join('\n') + '\n';
 }
 export function normalizePath(p: string): string { return p.replace(/\\/g, '/'); }
 
@@ -84,7 +84,15 @@ export async function loadPdfJs(): Promise<any> {
     };
 }
 
+let customRequestUrlMock: any = null;
+export function __setRequestUrlMock(mock: any) {
+    customRequestUrlMock = mock;
+}
+
 export async function requestUrl(req: any): Promise<any> {
+    if (customRequestUrlMock) {
+        return await customRequestUrlMock(req);
+    }
     const url = typeof req === 'string' ? req : req.url;
     const method = (typeof req === 'string' ? 'GET' : req.method) || 'GET';
     const headers = typeof req === 'string' ? {} : req.headers || {};

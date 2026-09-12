@@ -11,6 +11,7 @@ export class GitLabServerModal extends Modal {
     private baseUrl: string = '';
     private token: string = '';
     private defaultProjectId: string = '';
+    private defaultBranch: string = 'main';
 
     constructor(
         app: App,
@@ -28,6 +29,7 @@ export class GitLabServerModal extends Modal {
             this.baseUrl = server.baseUrl;
             this.token = server.token;
             this.defaultProjectId = server.defaultProjectId || '';
+            this.defaultBranch = server.defaultBranch || 'main';
         }
     }
 
@@ -89,6 +91,19 @@ export class GitLabServerModal extends Modal {
         });
         projectInput.oninput = () => {
             this.defaultProjectId = projectInput.value.trim();
+        };
+
+        // 同期・参照ブランチ
+        const branchGroup = contentEl.createDiv({ cls: 'ai-notebook-form-group' });
+        branchGroup.createEl('label', { text: '同期・参照ブランチ (任意)' });
+        branchGroup.createEl('small', { text: 'ノートブックのコミット保存およびオンデマンド参照に使用するブランチ名（デフォルト: main）', cls: 'ai-notebook-field-desc' });
+        const branchInput = branchGroup.createEl('input', {
+            type: 'text',
+            value: this.defaultBranch,
+            placeholder: 'main'
+        });
+        branchInput.oninput = () => {
+            this.defaultBranch = branchInput.value.trim() || 'main';
         };
 
         // 接続テストセクション
@@ -164,7 +179,8 @@ export class GitLabServerModal extends Modal {
             name: this.name.trim(),
             baseUrl: this.baseUrl.trim(),
             token: this.token.trim(),
-            defaultProjectId: this.defaultProjectId.trim() || undefined
+            defaultProjectId: this.defaultProjectId.trim() || undefined,
+            defaultBranch: this.defaultBranch.trim() || 'main'
         };
 
         if (this.server) {

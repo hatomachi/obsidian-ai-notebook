@@ -1,5 +1,5 @@
 import { requestUrl } from 'obsidian';
-import { AINotebookSettings, GitLabServerConfig, GitLabUploadResult } from '../types';
+import { AINotebookSettings, GitLabServerConfig, GitLabUploadResult, GitLabTreeItem, GitLabCommitAction, GitLabCommitPayload } from '../types';
 
 /**
  * GitLab Base URL を正規化 (例: "https://gitlab.example.com" -> "https://gitlab.example.com/api/v4")
@@ -502,5 +502,269 @@ export class GitLabService {
 
         this.imageBlobUrlCache.set(trimmedUrl, blobUrl);
         return blobUrl;
+    }
+
+    /**
+     * リポジトリのツリー構造を取得
+     * GET /projects/:id/repository/tree
+     */
+    async listRepositoryTree(options?: {
+        serverId?: string;
+        projectId?: string;
+        path?: string;
+        ref?: string;
+        recursive?: boolean;
+        maxPages?: number;
+    }): Promise<GitLabTreeItem[]> {
+        const server = this.getServer(options?.serverId);
+        if (!server || !this.isConfigured(server.id)) {
+            return [];
+        }
+
+        const projectId = options?.projectId || server.defaultProjectId;
+        if (!projectId?.trim()) {
+            return [];
+        }
+
+        const baseUrl = normalizeGitLabBaseUrl(server.baseUrl);
+        const encodedPid = encodeProjectId(projectId);
+        const branch = options?.ref || server.defaultBranch || 'main';
+        const isRecursive = options?.recursive ?? true;
+        const maxPages = options?.maxPages ?? 10;
+
+        const results: GitLabTreeItem[] = [];
+        let page = 1;
+
+        while (page <= maxPages) {
+            let url = `${baseUrl}/projects/${encodedPid}/repository/tree?per_page=100&page=${page}&ref=${encodeURIComponent(branch)}`;
+            if (isRecursive) url += '&recursive=true';
+            if (options?.path) url += `&path=${encodeURIComponent(options.path)}`;
+
+            try {
+                const res = await requestUrl({
+                    url,
+                    method: 'GET',
+                    headers: {
+                        'PRIVATE-TOKEN': server.token.trim(),
+                        Accept: 'application/json'
+                    },
+                    throw: false
+                });
+
+                if (res.status >= 400) {
+                    console.warn(`[GitLabService] listRepositoryTree error (HTTP ${res.status}):`, res.text);
+                    break;
+                }
+
+                const items = res.json as GitLabTreeItem[];
+                if (!Array.isArray(items) || items.length === 0) {
+                    break;
+                }
+
+                results.push(...items);
+
+                // 次ページヘッダーの確認
+                const nextPage = res.headers['x-next-page'] || res.headers['X-Next-Page'];
+                if (!nextPage || !nextPage.trim()) {
+                    break;
+                }
+                page = parseInt(nextPage, 10);
+                if (isNaN(page)) break;
+            } catch (err) {
+                console.error('[GitLabService] listRepositoryTree failed:', err);
+                break;
+            }
+        }
+
+        return results;
+    }
+
+    /**
+     * ファイルの生データ (Raw content) をテキストとして取得
+     * GET /projects/:id/repository/files/:file_path/raw
+     */
+    async getFileRaw(
+        filePath: string,
+        options?: { serverId?: string; projectId?: string; ref?: string }
+    ): Promise<string> {
+        const server = this.getServer(options?.serverId);
+        if (!server || !this.isConfigured(server.id)) {
+            throw new Error('GitLab サーバーが設定されていないか、トークンが未入力です。');
+        }
+
+        const projectId = options?.projectId || server.defaultProjectId;
+        if (!projectId?.trim()) {
+            throw new Error('GitLab プロジェクトIDが指定されていません。');
+        }
+
+        const baseUrl = normalizeGitLabBaseUrl(server.baseUrl);
+        const encodedPid = encodeProjectId(projectId);
+        const branch = options?.ref || server.defaultBranch || 'main';
+        const encodedFilePath = encodeURIComponent(filePath);
+        const url = `${baseUrl}/projects/${encodedPid}/repository/files/${encodedFilePath}/raw?ref=${encodeURIComponent(branch)}`;
+
+        const res = await requestUrl({
+            url,
+            method: 'GET',
+            headers: {
+                'PRIVATE-TOKEN': server.token.trim()
+            },
+            throw: false
+        });
+
+        if (res.status >= 400) {
+            throw new Error(`GitLab ファイル取得失敗 (${filePath}, HTTP ${res.status})`);
+        }
+
+        return res.text;
+    }
+
+    /**
+     * ファイルの生バイナリデータを取得 (画像等のダウンロード用)
+     */
+    async downloadRepositoryFile(
+        filePath: string,
+        options?: { serverId?: string; projectId?: string; ref?: string }
+    ): Promise<ArrayBuffer> {
+        const server = this.getServer(options?.serverId);
+        if (!server || !this.isConfigured(server.id)) {
+            throw new Error('GitLab サーバーが設定されていないか、トークンが未入力です。');
+        }
+
+        const projectId = options?.projectId || server.defaultProjectId;
+        if (!projectId?.trim()) {
+            throw new Error('GitLab プロジェクトIDが指定されていません。');
+        }
+
+        const baseUrl = normalizeGitLabBaseUrl(server.baseUrl);
+        const encodedPid = encodeProjectId(projectId);
+        const branch = options?.ref || server.defaultBranch || 'main';
+        const encodedFilePath = encodeURIComponent(filePath);
+        const url = `${baseUrl}/projects/${encodedPid}/repository/files/${encodedFilePath}/raw?ref=${encodeURIComponent(branch)}`;
+
+        const res = await requestUrl({
+            url,
+            method: 'GET',
+            headers: {
+                'PRIVATE-TOKEN': server.token.trim()
+            },
+            throw: false
+        });
+
+        if (res.status >= 400) {
+            throw new Error(`GitLab バイナリダウンロード失敗 (${filePath}, HTTP ${res.status})`);
+        }
+
+        return res.arrayBuffer;
+    }
+
+    /**
+     * ファイルが存在するか確認
+     * HEAD /projects/:id/repository/files/:file_path
+     */
+    async checkFileExists(
+        filePath: string,
+        options?: { serverId?: string; projectId?: string; ref?: string }
+    ): Promise<boolean> {
+        const server = this.getServer(options?.serverId);
+        if (!server || !this.isConfigured(server.id)) return false;
+
+        const projectId = options?.projectId || server.defaultProjectId;
+        if (!projectId?.trim()) return false;
+
+        const baseUrl = normalizeGitLabBaseUrl(server.baseUrl);
+        const encodedPid = encodeProjectId(projectId);
+        const branch = options?.ref || server.defaultBranch || 'main';
+        const encodedFilePath = encodeURIComponent(filePath);
+        const url = `${baseUrl}/projects/${encodedPid}/repository/files/${encodedFilePath}?ref=${encodeURIComponent(branch)}`;
+
+        try {
+            const res = await requestUrl({
+                url,
+                method: 'HEAD',
+                headers: {
+                    'PRIVATE-TOKEN': server.token.trim()
+                },
+                throw: false
+            });
+            return res.status >= 200 && res.status < 300;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * 複数ファイルの一括コミット（Git push に相当）
+     * POST /projects/:id/repository/commits
+     */
+    async commitFiles(payload: {
+        actions: GitLabCommitAction[];
+        commitMessage: string;
+        branch?: string;
+        projectId?: string;
+        serverId?: string;
+    }): Promise<{ success: boolean; commitId?: string; error?: string }> {
+        const server = this.getServer(payload.serverId);
+        if (!server || !this.isConfigured(server.id)) {
+            return { success: false, error: 'GitLab サーバーが設定されていないか、トークンが未入力です。' };
+        }
+
+        const projectId = payload.projectId || server.defaultProjectId;
+        if (!projectId?.trim()) {
+            return { success: false, error: 'GitLab プロジェクトIDが指定されていません。' };
+        }
+
+        if (!payload.actions || payload.actions.length === 0) {
+            return { success: false, error: 'コミット対象のアクション（ファイル変更）がありません。' };
+        }
+
+        const baseUrl = normalizeGitLabBaseUrl(server.baseUrl);
+        const encodedPid = encodeProjectId(projectId);
+        const branch = payload.branch || server.defaultBranch || 'main';
+        const commitEndpoint = `${baseUrl}/projects/${encodedPid}/repository/commits`;
+
+        const commitPayload: GitLabCommitPayload = {
+            branch,
+            commit_message: payload.commitMessage,
+            actions: payload.actions
+        };
+
+        try {
+            const res = await requestUrl({
+                url: commitEndpoint,
+                method: 'POST',
+                headers: {
+                    'PRIVATE-TOKEN': server.token.trim(),
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json'
+                },
+                body: JSON.stringify(commitPayload),
+                throw: false
+            });
+
+            if (res.status >= 400) {
+                const errText = res.text || '';
+                let parsedMsg = errText;
+                try {
+                    const parsed = JSON.parse(errText);
+                    parsedMsg = parsed.message || parsed.error || errText;
+                } catch {}
+                return {
+                    success: false,
+                    error: `GitLab コミット失敗 (HTTP ${res.status}): ${parsedMsg}`
+                };
+            }
+
+            const resData = res.json;
+            return {
+                success: true,
+                commitId: resData?.id || resData?.short_id
+            };
+        } catch (err: any) {
+            return {
+                success: false,
+                error: `GitLab コミット通信例外: ${err?.message || String(err)}`
+            };
+        }
     }
 }

@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, setIcon } from 'obsidian';
+import { ItemView, WorkspaceLeaf, setIcon, Notice } from 'obsidian';
 import type AINotebookPlugin from '../main';
 import { NotebookMetadata } from '../types';
 import { CreateNotebookModal } from './modals/CreateNotebookModal';
@@ -166,8 +166,11 @@ export class AINotebookGalleryView extends ItemView {
             const isMine = nb.userName === currentUser;
             const isLegacy = !nb.userName;
             const isOthers = !isMine && !isLegacy;
+            const isRemote = !!nb.isRemote;
 
-            const card = gridEl.createDiv({ cls: `ai-notebook-card ${isMine ? 'is-my-territory' : 'is-shared-territory'}` });
+            const card = gridEl.createDiv({
+                cls: `ai-notebook-card ${isMine ? 'is-my-territory' : 'is-shared-territory'} ${isRemote ? 'is-remote-notebook' : ''}`
+            });
             
             // カードヘッダー
             const cardHeader = card.createDiv({ cls: 'ai-notebook-card-header' });
@@ -175,11 +178,15 @@ export class AINotebookGalleryView extends ItemView {
             const cardIcon = iconArea.createDiv({ cls: 'ai-notebook-card-icon' });
             setIcon(cardIcon, nb.icon || 'book-open');
 
-            // 👤 ユーザー・縄張りバッジ
+            // 👤 ユーザー・縄張りバッジ（クラウド時は水色バッジ＋クラウド表記）
             const userBadge = iconArea.createSpan({
-                cls: `ai-notebook-user-badge ${isMine ? 'is-mine' : isLegacy ? 'is-legacy' : 'is-others'}`
+                cls: `ai-notebook-user-badge ${isRemote ? 'is-remote' : isMine ? 'is-mine' : isLegacy ? 'is-legacy' : 'is-others'}`
             });
-            if (isMine) {
+            if (isRemote) {
+                setIcon(userBadge.createSpan({ cls: 'ai-notebook-user-icon' }), 'cloud');
+                const suffix = isMine ? ' 自分 (クラウド)' : isOthers ? ` @${nb.userName} (クラウド)` : ' 共有 (クラウド)';
+                userBadge.createSpan({ text: suffix });
+            } else if (isMine) {
                 setIcon(userBadge.createSpan({ cls: 'ai-notebook-user-icon' }), 'user');
                 userBadge.createSpan({ text: ' 自分' });
             } else if (isOthers) {
@@ -192,15 +199,38 @@ export class AINotebookGalleryView extends ItemView {
 
             const cardActions = cardHeader.createDiv({ cls: 'ai-notebook-card-actions' });
 
-            // 他人ノートブックの場合：フォークボタン
-            if (isOthers) {
+            // 自分のローカルノートブック：☁️ GitLab リポジトリに一括保存 (Push) ボタン
+            if (isMine && !isRemote) {
+                const syncBtn = cardActions.createEl('button', { cls: 'ai-notebook-card-action-btn' });
+                setIcon(syncBtn, 'cloud-upload');
+                syncBtn.setAttribute('title', 'GitLab リポジトリに保存 (一括Push)');
+                syncBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    new Notice(`☁️ GitLab に保存中: "${nb.title}"...`);
+                    const res = await this.plugin.notebookManager.pushNotebookToGitLab(nb.id);
+                    if (res.success) {
+                        new Notice(`✅ GitLab に保存しました: "${nb.title}"`);
+                        await this.refresh();
+                    } else {
+                        new Notice(`❌ GitLab 保存失敗: ${res.error || '不明なエラー'}`);
+                    }
+                };
+            }
+
+            // 他人のノートブックまたはクラウドノートブックの場合：フォークボタン
+            if (isOthers || isRemote) {
                 const forkBtn = cardActions.createEl('button', { cls: 'ai-notebook-card-action-btn' });
                 setIcon(forkBtn, 'git-fork');
-                forkBtn.setAttribute('title', '自分の縄張りにフォークして複製');
+                forkBtn.setAttribute('title', isRemote ? 'GitLab から自分の縄張りにフォークして実体化' : '自分の縄張りにフォークして複製');
                 forkBtn.onclick = async (e) => {
                     e.stopPropagation();
-                    if (confirm(`ノートブック "${nb.title}" を自分の縄張りにフォークしますか？`)) {
+                    const promptMsg = isRemote
+                        ? `クラウド上のノートブック "${nb.title}" を自分の縄張りにフォーク（ダウンロード実体化）しますか？`
+                        : `ノートブック "${nb.title}" を自分の縄張りにフォークしますか？`;
+                    if (confirm(promptMsg)) {
+                        new Notice(`フォーク中: "${nb.title}"...`);
                         const forked = await this.plugin.notebookManager.forkNotebook(nb.id);
+                        new Notice(`✅ フォーク完了: "${forked.title}"`);
                         await this.refresh();
                         if (this.onSelectNotebookHandler) {
                             this.onSelectNotebookHandler(forked.id);
@@ -210,7 +240,7 @@ export class AINotebookGalleryView extends ItemView {
             }
 
             // レガシーノートブックの場合：縄張り移行ボタン
-            if (isLegacy) {
+            if (isLegacy && !isRemote) {
                 const migrateBtn = cardActions.createEl('button', { cls: 'ai-notebook-card-action-btn' });
                 setIcon(migrateBtn, 'folder-symlink');
                 migrateBtn.setAttribute('title', '自分の縄張りに移行 (Migrate)');
@@ -223,8 +253,8 @@ export class AINotebookGalleryView extends ItemView {
                 };
             }
 
-            // 削除ボタン（自分の縄張りまたはレガシーのみ）
-            if (isMine || isLegacy) {
+            // 削除ボタン（ローカルの自分の縄張りまたはローカルレガシーのみ）
+            if (!isRemote && (isMine || isLegacy)) {
                 const deleteBtn = cardActions.createEl('button', { cls: 'ai-notebook-card-delete-btn' });
                 setIcon(deleteBtn, 'trash-2');
                 deleteBtn.setAttribute('title', '削除');
