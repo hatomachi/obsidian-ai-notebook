@@ -1,3 +1,4 @@
+import { requestUrl } from 'obsidian';
 import { AINotebookSettings, GitLabServerConfig, GitLabUploadResult } from '../types';
 
 /**
@@ -146,22 +147,24 @@ export class GitLabService {
 
         try {
             // 1. ユーザー情報確認
-            const userRes = await fetch(`${baseUrl}/user`, {
+            const userRes = await requestUrl({
+                url: `${baseUrl}/user`,
                 method: 'GET',
                 headers: {
                     'PRIVATE-TOKEN': token,
                     Accept: 'application/json',
                 },
+                throw: false
             });
 
-            if (!userRes.ok) {
+            if (userRes.status >= 400) {
                 if (userRes.status === 401) {
                     return { success: false, message: `認証失敗 (401 Unauthorized): トークンが無効または期限切れです。` };
                 }
-                return { success: false, message: `接続失敗 (HTTP ${userRes.status}): ${userRes.statusText}` };
+                return { success: false, message: `接続失敗 (HTTP ${userRes.status})` };
             }
 
-            const userData = await userRes.json();
+            const userData = userRes.json;
             const userName = userData.name ? `${userData.name} (@${userData.username})` : userData.username;
 
             // 2. プロジェクト確認（指定されている場合）
@@ -169,16 +172,18 @@ export class GitLabService {
             let projectData: any = undefined;
             if (targetProjectId?.trim()) {
                 const encodedPid = encodeProjectId(targetProjectId);
-                const projRes = await fetch(`${baseUrl}/projects/${encodedPid}`, {
+                const projRes = await requestUrl({
+                    url: `${baseUrl}/projects/${encodedPid}`,
                     method: 'GET',
                     headers: {
                         'PRIVATE-TOKEN': token,
                         Accept: 'application/json',
                     },
+                    throw: false
                 });
 
-                if (projRes.ok) {
-                    projectData = await projRes.json();
+                if (projRes.status < 400) {
+                    projectData = projRes.json;
                 } else {
                     return {
                         success: false,
@@ -324,16 +329,18 @@ export class GitLabService {
             headers['PRIVATE-TOKEN'] = server.token.trim();
         }
 
-        const res = await fetch(targetUrl, {
+        const res = await requestUrl({
+            url: targetUrl,
             method: 'GET',
-            headers
+            headers,
+            throw: false
         });
 
-        if (!res.ok) {
-            throw new Error(`GitLab ファイルダウンロード失敗 (HTTP ${res.status}): ${res.statusText}`);
+        if (res.status >= 400) {
+            throw new Error(`GitLab ファイルダウンロード失敗 (HTTP ${res.status})`);
         }
 
-        return await res.arrayBuffer();
+        return res.arrayBuffer;
     }
 
     /**
@@ -400,16 +407,24 @@ export class GitLabService {
             headers['PRIVATE-TOKEN'] = server.token.trim();
         }
 
-        const res = await fetch(trimmedUrl, {
-            method: 'GET',
-            headers
-        });
-
-        if (!res.ok) {
-            throw new Error(`GitLab 画像取得失敗 (HTTP ${res.status}): ${res.statusText}`);
+        let res;
+        try {
+            res = await requestUrl({
+                url: trimmedUrl,
+                method: 'GET',
+                headers,
+                throw: false
+            });
+        } catch (fetchErr: any) {
+            console.error('[AI Notebook] requestUrl failed for GitLab image:', trimmedUrl, fetchErr);
+            throw new Error(`GitLab 画像取得通信エラー: ${fetchErr?.message || fetchErr}`);
         }
 
-        const contentType = res.headers.get('content-type');
+        if (res.status >= 400) {
+            throw new Error(`GitLab 画像取得失敗 (HTTP ${res.status})`);
+        }
+
+        const contentType = res.headers['content-type'] || res.headers['Content-Type'] || '';
         let mimeType = 'image/webp';
         if (contentType && contentType.startsWith('image/')) {
             mimeType = contentType.split(';')[0].trim();
@@ -422,7 +437,7 @@ export class GitLabService {
             else if (clean.endsWith('.bmp')) mimeType = 'image/bmp';
         }
 
-        const arrayBuffer = await res.arrayBuffer();
+        const arrayBuffer = res.arrayBuffer;
         const uint8Array = new Uint8Array(arrayBuffer);
         const blob = new Blob([uint8Array as any], { type: mimeType });
         const blobUrl = URL.createObjectURL(blob);

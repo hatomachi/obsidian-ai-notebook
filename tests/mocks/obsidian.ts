@@ -61,3 +61,34 @@ export async function loadPdfJs(): Promise<any> {
         }
     };
 }
+
+export async function requestUrl(req: any): Promise<any> {
+    const url = typeof req === 'string' ? req : req.url;
+    const method = (typeof req === 'string' ? 'GET' : req.method) || 'GET';
+    const headers = typeof req === 'string' ? {} : req.headers || {};
+    const body = typeof req === 'string' ? undefined : req.body;
+
+    const res = await fetch(url, {
+        method,
+        headers,
+        body: body ? (Buffer.isBuffer(body) ? body : Buffer.from(body)) : undefined
+    });
+
+    const arrayBuffer = await res.arrayBuffer();
+    const text = Buffer.from(arrayBuffer).toString('utf-8');
+    let json = null;
+    try {
+        json = JSON.parse(text);
+    } catch (e) {}
+
+    const resHeaders: Record<string, string> = {};
+    res.headers.forEach((v, k) => { resHeaders[k] = v; });
+
+    return {
+        status: res.status,
+        headers: resHeaders,
+        arrayBuffer,
+        text,
+        json
+    };
+}
