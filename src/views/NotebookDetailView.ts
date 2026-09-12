@@ -7,6 +7,7 @@ import { BoundFolderExplorerModal } from './modals/BoundFolderExplorerModal';
 import { BindFolderModal } from './modals/BindFolderModal';
 import { TextInputModal } from './modals/TextInputModal';
 import { MattermostModal } from './modals/MattermostModal';
+import { ImagePreviewModal } from './modals/ImagePreviewModal';
 import { BoundFolderReader } from '../services/BoundFolderReader';
 import { AgentFactory } from '../adapters/AgentFactory';
 import { DebugFolderHelper } from '../utils/debugFolderHelper';
@@ -507,15 +508,22 @@ export class AINotebookDetailView extends ItemView {
             for (const src of this.sources) {
                 const item = sourceList.createDiv({ cls: 'ai-notebook-source-item is-clickable' });
                 
-                // アイテムクリックで直接 Obsidian エディタで開く
-                item.onclick = async () => {
-                    await DebugFolderHelper.openInEditor(this.app, src.path);
-                };
-                item.setAttribute('title', `クリックでObsidianエディタで開く: ${src.path}`);
-
-                const effectiveExt = src.convertedFrom
+                const effectiveExt = (src.convertedFrom
                     ? src.convertedFrom.split('.').pop() || src.extension
-                    : src.extension;
+                    : src.extension).toLowerCase();
+                const isImageSource = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(effectiveExt)
+                    || /\.(png|jpg|jpeg|webp|gif|bmp)(\.md)?$/i.test(src.name);
+
+                // アイテムクリック: 画像ならプレビューモーダル、文書ならエディタで開く
+                item.onclick = async () => {
+                    if (isImageSource) {
+                        new ImagePreviewModal(this.app, this.plugin, src).open();
+                    } else {
+                        await DebugFolderHelper.openInEditor(this.app, src.path);
+                    }
+                };
+                item.setAttribute('title', isImageSource ? `クリックで画像プレビューを表示: ${src.name}` : `クリックでObsidianエディタで開く: ${src.path}`);
+
                 const iconSpan = item.createSpan({ cls: 'ai-notebook-source-icon' });
                 setIcon(iconSpan, this.getFileIcon(effectiveExt));
 

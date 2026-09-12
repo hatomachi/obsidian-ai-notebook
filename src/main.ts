@@ -65,30 +65,54 @@ export default class AINotebookPlugin extends Plugin {
 
         // 🦊 GitLab Uploads 認証付き画像プレビューの自動レンダリング
         this.registerMarkdownPostProcessor(async (el, ctx) => {
-            const images = el.querySelectorAll('img');
-            for (let i = 0; i < images.length; i++) {
-                const img = images[i];
-                const src = img.getAttribute('src');
-                if (!src) continue;
+            await this.scanAndRenderGitLabImages(el);
+        });
 
-                if (this.gitlabService && this.gitlabService.isGitLabUploadUrl(src)) {
-                    img.addClass('ai-notebook-gitlab-loading');
-                    try {
-                        const blobUrl = await this.gitlabService.getAuthenticatedImageUrl(src);
-                        if (blobUrl) {
-                            img.src = blobUrl;
-                            img.removeClass('ai-notebook-gitlab-loading');
-                            img.addClass('ai-notebook-gitlab-loaded');
-                        }
-                    } catch (err: any) {
-                        console.error('[AI Notebook] GitLab 画像プレビュー取得失敗:', src, err);
+        // ワークスペース変更・エディタ切替時にも自動スキャン
+        this.registerEvent(
+            this.app.workspace.on('layout-change', () => {
+                setTimeout(() => this.scanAndRenderGitLabImages(), 150);
+            })
+        );
+        this.registerEvent(
+            this.app.workspace.on('active-leaf-change', () => {
+                setTimeout(() => this.scanAndRenderGitLabImages(), 150);
+            })
+        );
+    }
+
+    /**
+     * 指定されたコンテナ（未指定なら document.body 全体）内の GitLab Uploads 画像を認証付き Blob URL に置換
+     */
+    async scanAndRenderGitLabImages(container?: HTMLElement): Promise<void> {
+        if (!this.gitlabService) return;
+        const target = container || document.body;
+        const images = target.querySelectorAll<HTMLImageElement>('img');
+        for (let i = 0; i < images.length; i++) {
+            const img = images[i];
+            if (img.hasClass('ai-notebook-gitlab-loaded') || img.hasClass('ai-notebook-gitlab-loading')) {
+                continue;
+            }
+            const src = img.getAttribute('src');
+            if (!src) continue;
+
+            if (this.gitlabService.isGitLabUploadUrl(src)) {
+                img.addClass('ai-notebook-gitlab-loading');
+                try {
+                    const blobUrl = await this.gitlabService.getAuthenticatedImageUrl(src);
+                    if (blobUrl) {
+                        img.src = blobUrl;
                         img.removeClass('ai-notebook-gitlab-loading');
-                        img.addClass('ai-notebook-gitlab-error');
-                        img.setAttribute('title', `GitLab 画像の取得に失敗しました: ${err?.message || err}`);
+                        img.addClass('ai-notebook-gitlab-loaded');
                     }
+                } catch (err: any) {
+                    console.error('[AI Notebook] GitLab 画像プレビュー取得失敗:', src, err);
+                    img.removeClass('ai-notebook-gitlab-loading');
+                    img.addClass('ai-notebook-gitlab-error');
+                    img.setAttribute('title', `GitLab 画像の取得に失敗しました: ${err?.message || err}`);
                 }
             }
-        });
+        }
     }
 
     async activateGalleryView(): Promise<void> {
