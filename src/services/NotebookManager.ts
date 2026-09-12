@@ -2,6 +2,7 @@ import { App, TFile, TFolder, parseYaml, stringifyYaml, normalizePath, FileSyste
 import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AINotebookSettings, SystemKnowledge, DocumentTemplate, SourceOrigin, TranscriptionErrorEntry, MattermostChannelRef, AddSourceResult } from '../types';
 import { TranscriptionService } from './transcription/TranscriptionService';
 import { BoundFolderReader } from './BoundFolderReader';
+import { ImageCompressor } from './ImageCompressor';
 import { DebugFolderHelper } from '../utils/debugFolderHelper';
 import * as path from 'path';
 
@@ -801,9 +802,9 @@ export class NotebookManager {
 
         DebugFolderHelper.logPipelineStep(fileName, 2, 'Read', `バッファ取得完了 (${buffer.length.toLocaleString()} bytes)`);
 
-        // バイナリドキュメント（Excel/PPTX/Word）の場合は自動で Markdown に決定的変換
+        // バイナリドキュメント（Excel/PPTX/Word/PDF）の場合は自動で Markdown に決定的変換
         if (TranscriptionService.isTranscribable(fileName)) {
-            DebugFolderHelper.logPipelineStep(fileName, 3, 'Route', `Officeドキュメントと判定 -> 自動パースを実行します`);
+            DebugFolderHelper.logPipelineStep(fileName, 3, 'Route', `ドキュメントと判定 (Office/PDF) -> 自動テキスト抽出を実行します`);
             try {
                 const { markdown, convertedFilename, metrics } = await TranscriptionService.transcribe(
                     buffer,
@@ -873,8 +874,42 @@ export class NotebookManager {
             }
         }
 
-        // 非Office文書（通常テキスト・PDF・画像など）
-        DebugFolderHelper.logPipelineStep(fileName, 3, 'Route', `非Office文書のため直接保存します`);
+        // 画像ファイル（PNG/JPG/WEBP/BMP）の場合は自動で WebP 軽量化圧縮
+        const shouldCompressImage = (this.settings.compressImages ?? true) && ImageCompressor.isCompressible(fileName);
+        if (shouldCompressImage) {
+            DebugFolderHelper.logPipelineStep(fileName, 3, 'Route', `画像ファイルと判定 -> WebP圧縮・リサイズを実行します`);
+            const compressionOptions = {
+                maxDimension: this.settings.imageMaxDimension ?? 1200,
+                quality: this.settings.imageQuality ?? 0.8
+            };
+
+            const compResult = await ImageCompressor.compress(buffer, fileName, compressionOptions);
+            const targetFilename = compResult.convertedFilename;
+            const targetPath = normalizePath(`${sourcesDir}/${targetFilename}`);
+
+            DebugFolderHelper.logPipelineStep(
+                fileName,
+                4,
+                'Compress',
+                `WebP圧縮完了: ${compResult.originalSize.toLocaleString()}B -> ${compResult.compressedSize.toLocaleString()}B (${compResult.ratio}%削減, ${compResult.width}x${compResult.height})`
+            );
+
+            const savedFile = await this.safeCreateOrModifyBinary(targetPath, compResult.data);
+            DebugFolderHelper.logPipelineStep(fileName, 5, 'Save', `WebP画像保存完了: ${targetFilename}`);
+
+            return {
+                file: savedFile,
+                isConverted: false,
+                isImageCompressed: true,
+                convertedFilename: targetFilename,
+                originalSize: compResult.originalSize,
+                compressedSize: compResult.compressedSize,
+                compressionRatio: compResult.ratio
+            };
+        }
+
+        // その他一般ファイル（通常テキスト・SVG・コード等）
+        DebugFolderHelper.logPipelineStep(fileName, 3, 'Route', `一般ファイルのため直接保存します`);
         const filePath = normalizePath(`${sourcesDir}/${fileName}`);
         let directFile: TFile;
 

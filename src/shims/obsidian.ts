@@ -117,3 +117,10 @@ export class FileSystemAdapter {
         return '';
     }
 }
+
+export async function loadPdfJs(): Promise<any> {
+    if (typeof window !== 'undefined' && (window as any).pdfjsLib) {
+        return (window as any).pdfjsLib;
+    }
+    throw new Error('PDF.js は Web 版環境では現在サポートされていません');
+}

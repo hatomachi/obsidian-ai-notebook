@@ -539,6 +539,8 @@ export class AINotebookDetailView extends ItemView {
                         badge.setText('📑 PPTX変換');
                     } else if (origExt === 'docx' || origExt === 'doc') {
                         badge.setText('📄 Word変換');
+                    } else if (origExt === 'pdf') {
+                        badge.setText('📕 PDF変換');
                     } else {
                         badge.setText('変換済');
                     }
@@ -609,6 +611,7 @@ export class AINotebookDetailView extends ItemView {
 
         let addedCount = 0;
         let convertedCount = 0;
+        let compressedImageCount = 0;
         let failedCount = 0;
 
         try {
@@ -701,7 +704,14 @@ export class AINotebookDetailView extends ItemView {
                     new Notice(`⚠️ "${fileName}" のテキスト変換に失敗しました: ${result.error}\n（原本バイナリを直接保存しました）`, 8000);
                 } else if (result.isConverted) {
                     convertedCount++;
-                    new Notice(`✅ "${fileName}" を Markdown に変換しました (${result.metrics?.lineCount || 0}行)`, 4000);
+                    const origExt = (fileName.split('.').pop() || '').toLowerCase();
+                    const icon = origExt === 'pdf' ? '📕' : '✅';
+                    new Notice(`${icon} "${fileName}" を Markdown に変換しました (${result.metrics?.lineCount || 0}行)`, 4000);
+                } else if (result.isImageCompressed) {
+                    compressedImageCount++;
+                    const origKb = Math.round((result.originalSize || 0) / 1024);
+                    const compKb = Math.round((result.compressedSize || 0) / 1024);
+                    new Notice(`🖼️ "${fileName}" を WebP に圧縮しました (${origKb}KB ➡ ${compKb}KB, ${result.compressionRatio}%削減)`, 5000);
                 } else {
                     addedCount++;
                 }
@@ -712,9 +722,10 @@ export class AINotebookDetailView extends ItemView {
             }
         }
 
-        const totalSuccessful = addedCount + convertedCount;
+        const totalSuccessful = addedCount + convertedCount + compressedImageCount;
         if (totalSuccessful > 0 || failedCount > 0) {
             const summaryParts: string[] = [];
+            if (compressedImageCount > 0) summaryParts.push(`${compressedImageCount}件をWebP圧縮`);
             if (convertedCount > 0) summaryParts.push(`${convertedCount}件をテキスト変換`);
             if (addedCount > 0) summaryParts.push(`${addedCount}件を追加`);
             if (failedCount > 0) summaryParts.push(`⚠️ ${failedCount}件の変換失敗(原本保存)`);

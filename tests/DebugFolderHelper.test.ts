@@ -12,9 +12,11 @@ async function runTests() {
     assert.strictEqual(TranscriptionService.isTranscribable('macro.xlsm'), true, 'xlsm は true');
     assert.strictEqual(TranscriptionService.isTranscribable('doc.docx'), true, 'docx は true');
     assert.strictEqual(TranscriptionService.isTranscribable('slide.pptx'), true, 'pptx は true');
+    assert.strictEqual(TranscriptionService.isTranscribable('paper.pdf'), true, 'pdf は true');
+    assert.strictEqual(TranscriptionService.isTranscribable('paper.PDF'), true, '大文字 PDF は true');
     assert.strictEqual(TranscriptionService.isTranscribable('memo.md'), false, 'md は false');
-    assert.strictEqual(TranscriptionService.isTranscribable('paper.pdf'), false, 'pdf は false');
-    console.log('  -> OK: 対応形式判定が正常です (xlsm対応含む)');
+    assert.strictEqual(TranscriptionService.isTranscribable('image.png'), false, 'png は false');
+    console.log('  -> OK: 対応形式判定が正常です (xlsm/pdf対応含む)');
 
     // Test 2: transcribe 実行時の metrics 取得検証
     console.log('Test 2: transcribe 実行時の metrics 取得検証');

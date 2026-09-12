@@ -180,6 +180,49 @@ export class AINotebookSettingTab extends PluginSettingTab {
         }
 
         // ============================================================
+        // 🖼️ 画像・ドキュメント軽量化設定 (容量ゼロ化 Step 1)
+        // ============================================================
+        containerEl.createEl('h3', { text: '🖼️ 画像・ドキュメント軽量化設定' });
+
+        new Setting(containerEl)
+            .setName('画像のWebP自動軽量化')
+            .setDesc('画像（PNG/JPG等）投入時、クライアント側で長辺1200px・WebP形式に自動圧縮します（Vault容量・Gitサイズの爆発を防止）')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.compressImages ?? true)
+                .onChange(async (value) => {
+                    this.plugin.settings.compressImages = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('最大長辺ピクセル (px)')
+            .setDesc('長辺がこの値を超える画像をアスペクト比維持のまま縮小します (デフォルト: 1200)')
+            .addText(text => text
+                .setPlaceholder('1200')
+                .setValue(String(this.plugin.settings.imageMaxDimension ?? 1200))
+                .onChange(async (value) => {
+                    const parsed = parseInt(value.trim(), 10);
+                    if (!isNaN(parsed) && parsed > 0) {
+                        this.plugin.settings.imageMaxDimension = parsed;
+                        await this.plugin.saveSettings();
+                    }
+                }));
+
+        new Setting(containerEl)
+            .setName('WebP 圧縮品質 (0.1 〜 1.0)')
+            .setDesc('WebP変換時の画質クオリティ。0.8で通常80〜95%のファイルサイズ削減が可能です (デフォルト: 0.8)')
+            .addText(text => text
+                .setPlaceholder('0.8')
+                .setValue(String(this.plugin.settings.imageQuality ?? 0.8))
+                .onChange(async (value) => {
+                    const parsed = parseFloat(value.trim());
+                    if (!isNaN(parsed) && parsed > 0 && parsed <= 1.0) {
+                        this.plugin.settings.imageQuality = parsed;
+                        await this.plugin.saveSettings();
+                    }
+                }));
+
+        // ============================================================
         // 🛠️ デバッグ機能設定 (将来不要時に容易に撤去可能)
         // ============================================================
         containerEl.createEl('h3', { text: '🛠️ デバッグ機能' });

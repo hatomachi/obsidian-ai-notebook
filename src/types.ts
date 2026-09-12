@@ -119,6 +119,10 @@ export interface AddSourceResult {
     transcriptionFailed?: boolean;
     error?: string;
     metrics?: { durationMs: number; lineCount: number; charCount: number };
+    isImageCompressed?: boolean;
+    originalSize?: number;
+    compressedSize?: number;
+    compressionRatio?: number;
 }
 
 export interface NotebookArtifact {
@@ -246,6 +250,9 @@ export interface AINotebookSettings {
     mattermostToken?: string;      // Personal Access Token (PAT)
     mattermostPresets?: MattermostPreset[]; // お気に入りチャンネルセット
     enableDebugActions?: boolean;  // 🛠️ デバッグ動線・切り分けログの有効化（将来着脱容易）
+    compressImages?: boolean;      // 🖼️ 画像のWebP自動圧縮 (長辺1200px / 品質80%)
+    imageMaxDimension?: number;    // 最大長辺ピクセル (デフォルト: 1200)
+    imageQuality?: number;         // 圧縮品質 0.1〜1.0 (デフォルト: 0.8)
 }
 
 export const DEFAULT_SETTINGS: AINotebookSettings = {
@@ -258,7 +265,10 @@ export const DEFAULT_SETTINGS: AINotebookSettings = {
     mattermostUrl: '',
     mattermostToken: '',
     mattermostPresets: [],
-    enableDebugActions: true
+    enableDebugActions: true,
+    compressImages: true,
+    imageMaxDimension: 1200,
+    imageQuality: 0.8
 };
 
 

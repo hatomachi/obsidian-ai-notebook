@@ -1,9 +1,10 @@
 import { ExcelParser } from './ExcelParser';
 import { DocxParser } from './DocxParser';
 import { PptxParser } from './PptxParser';
+import { PdfParser } from './PdfParser';
 
 export class TranscriptionService {
-    private static readonly SUPPORTED_EXTENSIONS = new Set(['xlsx', 'xls', 'xlsm', 'docx', 'pptx']);
+    private static readonly SUPPORTED_EXTENSIONS = new Set(['xlsx', 'xls', 'xlsm', 'docx', 'pptx', 'pdf']);
 
     /**
      * 指定されたファイルが決定的変換（Transcription）対象かを判定
@@ -36,6 +37,9 @@ export class TranscriptionService {
                     break;
                 case 'pptx':
                     markdown = await PptxParser.parse(data, originalFilename);
+                    break;
+                case 'pdf':
+                    markdown = await PdfParser.parse(data, originalFilename);
                     break;
                 default:
                     throw new Error(`サポートされていないファイル形式です: .${ext}`);
