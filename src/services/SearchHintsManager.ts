@@ -3,25 +3,77 @@ import * as path from 'path';
 import { parseYaml, stringifyYaml } from 'obsidian';
 import { SearchHintRule, SearchHintsData } from '../types';
 
+export interface SearchHintsOptions {
+    notebookDir: string;
+    userHintsPath?: string;
+    username?: string;
+    rootDir?: string;
+}
+
 export class SearchHintsManager {
     /**
-     * ノートブック直下の HINTS.md の絶対パスを取得
+     * パス解決: ノートブック固有パスとユーザー共通パスを導出
+     */
+    static resolvePaths(target: string | SearchHintsOptions): {
+        notebookHintsPath: string;
+        userHintsPath?: string;
+        notebookDir: string;
+        defaultSavePath: string;
+    } {
+        let notebookDir: string;
+        let userHintsPath: string | undefined;
+
+        if (typeof target === 'string') {
+            notebookDir = target;
+            const normalized = path.normalize(notebookDir);
+            // 例: .../users/<username>/notebooks/... から users/<username>/HINTS.md を推定
+            const match = normalized.match(/(.*[\\/]users[\\/][^\\/]+)[\\/]notebooks(?:[\\/]|$)/);
+            if (match) {
+                userHintsPath = path.join(match[1], 'HINTS.md');
+            }
+        } else {
+            notebookDir = target.notebookDir;
+            if (target.userHintsPath) {
+                userHintsPath = target.userHintsPath;
+            } else if (target.username && target.rootDir) {
+                userHintsPath = path.join(target.rootDir, 'users', target.username, 'HINTS.md');
+            } else {
+                const normalized = path.normalize(notebookDir);
+                const match = normalized.match(/(.*[\\/]users[\\/][^\\/]+)[\\/]notebooks(?:[\\/]|$)/);
+                if (match) {
+                    userHintsPath = path.join(match[1], 'HINTS.md');
+                }
+            }
+        }
+
+        const notebookHintsPath = path.join(notebookDir, 'HINTS.md');
+        const defaultSavePath = userHintsPath || notebookHintsPath;
+
+        return {
+            notebookHintsPath,
+            userHintsPath,
+            notebookDir,
+            defaultSavePath
+        };
+    }
+
+    /**
+     * ノートブック直下の HINTS.md の絶対パスを取得（後方互換）
      */
     static getHintsPath(notebookDir: string): string {
         return path.join(notebookDir, 'HINTS.md');
     }
 
     /**
-     * HINTS.md を読み込み、ルール一覧をパース
+     * 指定されたファイルから HINTS.md を読み込み、ルール一覧をパース
      */
-    static loadHints(notebookDir: string): SearchHintsData {
-        const hintsPath = this.getHintsPath(notebookDir);
-        if (!fs.existsSync(hintsPath)) {
+    static loadHintsFromFile(filePath: string, scope?: 'user' | 'notebook'): SearchHintsData {
+        if (!fs.existsSync(filePath)) {
             return { confluenceHints: [] };
         }
 
         try {
-            const raw = fs.readFileSync(hintsPath, 'utf-8');
+            const raw = fs.readFileSync(filePath, 'utf-8');
             const match = raw.match(/^---\r?\n([\s\S]*?)(?:\r?\n)?---(?:\r?\n|$)/);
             if (match) {
                 const yaml = parseYaml(match[1]);
@@ -34,6 +86,7 @@ export class SearchHintsManager {
                         ancestorId: h.ancestor_id || h.ancestorId || undefined,
                         ancestorTitle: h.ancestor_title || h.ancestorTitle || undefined,
                         guidance: h.guidance || '',
+                        scope: scope || h.scope || undefined,
                         createdAt: h.created_at || h.createdAt || new Date().toISOString(),
                         updatedAt: h.updated_at || h.updatedAt || new Date().toISOString()
                     }));
@@ -44,17 +97,69 @@ export class SearchHintsManager {
                 }
             }
         } catch (e) {
-            console.warn(`[SearchHintsManager] Failed to read HINTS.md:`, e);
+            console.warn(`[SearchHintsManager] Failed to read ${filePath}:`, e);
         }
 
         return { confluenceHints: [] };
     }
 
     /**
+     * HINTS.md を読み込み、ルール一覧をパース（ユーザー共通 ＋ ノートブック固有をマージ）
+     */
+    static loadHints(target: string | SearchHintsOptions): SearchHintsData {
+        const { notebookHintsPath, userHintsPath } = this.resolvePaths(target);
+
+        // 1. ユーザー共通の知恵を読み込む
+        const userHints = userHintsPath ? this.loadHintsFromFile(userHintsPath, 'user') : { confluenceHints: [] };
+
+        // 2. ノートブック固有の知恵を読み込む
+        const notebookHints = this.loadHintsFromFile(notebookHintsPath, 'notebook');
+
+        // もしユーザー共通パスとノートブック固有パスが同じ（またはユーザー共通が存在しない）ならそのまま
+        if (!userHintsPath || userHintsPath === notebookHintsPath) {
+            return notebookHints;
+        }
+
+        // 3. マージ: ユーザー共通をベースに、ノートブック固有で上書き/追加
+        const mergedHints: SearchHintRule[] = [...userHints.confluenceHints];
+
+        for (const nbRule of notebookHints.confluenceHints) {
+            const existingIdx = mergedHints.findIndex(
+                u => u.id === nbRule.id ||
+                    (u.topic && nbRule.topic && u.topic.toLowerCase() === nbRule.topic.toLowerCase()) ||
+                    (u.ancestorId && nbRule.ancestorId && u.ancestorId === nbRule.ancestorId)
+            );
+
+            if (existingIdx >= 0) {
+                // ノートブック固有の指定で上書き・特化
+                mergedHints[existingIdx] = {
+                    ...mergedHints[existingIdx],
+                    ...nbRule,
+                    keywords: Array.from(new Set([
+                        ...(mergedHints[existingIdx].keywords || []),
+                        ...(nbRule.keywords || [])
+                    ])),
+                    scope: 'notebook'
+                };
+            } else {
+                mergedHints.push(nbRule);
+            }
+        }
+
+        return {
+            confluenceHints: mergedHints,
+            generalNotes: notebookHints.generalNotes || userHints.generalNotes
+        };
+    }
+
+    /**
      * SearchHintsData を HINTS.md に永続化
      */
-    static saveHints(notebookDir: string, data: SearchHintsData): void {
-        const hintsPath = this.getHintsPath(notebookDir);
+    static saveHints(targetPathOrDir: string, data: SearchHintsData): void {
+        const hintsPath = targetPathOrDir.endsWith('.md')
+            ? targetPathOrDir
+            : path.join(targetPathOrDir, 'HINTS.md');
+
         const yamlObj = {
             hints: data.confluenceHints.map(h => ({
                 id: h.id,
@@ -74,7 +179,7 @@ export class SearchHintsManager {
         let md = `---\n${frontmatter}---\n# 🧭 探索の知恵 (Search Hints)\n\n`;
         md += `<!-- このファイルは外部ソース探索の知恵・過去の学習履歴を記録します。\n`;
         md += `     ユーザーからの助言やAIの学習結果が蓄積され、次回以降の探索精度が自動で向上します。\n`;
-        md += `     手動での編集・追記も可能です。 -->\n\n`;
+        md += `     手動での編集・追記・他メンバーへの共有も可能です。 -->\n\n`;
 
         md += `## Confluence 探索ルール\n\n`;
         if (data.confluenceHints.length === 0) {
@@ -97,20 +202,31 @@ export class SearchHintsManager {
         }
 
         try {
-            if (!fs.existsSync(notebookDir)) {
-                fs.mkdirSync(notebookDir, { recursive: true });
+            const dir = path.dirname(hintsPath);
+            if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
             }
             fs.writeFileSync(hintsPath, md, 'utf-8');
         } catch (e) {
-            console.warn(`[SearchHintsManager] Failed to write HINTS.md:`, e);
+            console.warn(`[SearchHintsManager] Failed to write ${hintsPath}:`, e);
         }
     }
 
     /**
      * 人間のフィードバックやAI探索知恵を HINTS.md に学習・蓄積
+     * デフォルトではユーザー共通の HINTS.md に永続化し、Notebook跨ぎで知恵を共有
      */
-    static learnHint(notebookDir: string, rule: Partial<SearchHintRule> & { topic: string }): SearchHintRule {
-        const data = this.loadHints(notebookDir);
+    static learnHint(
+        target: string | SearchHintsOptions,
+        rule: Partial<SearchHintRule> & { topic: string },
+        options?: { scope?: 'user' | 'notebook' }
+    ): SearchHintRule {
+        const { notebookHintsPath, userHintsPath, defaultSavePath } = this.resolvePaths(target);
+        const savePath = options?.scope === 'notebook'
+            ? notebookHintsPath
+            : (userHintsPath || defaultSavePath);
+
+        const data = this.loadHintsFromFile(savePath, options?.scope || (userHintsPath ? 'user' : 'notebook'));
         const now = new Date().toISOString();
 
         // 既存の同一トピックまたは同一Ancestorがあるかチェック
@@ -133,6 +249,7 @@ export class SearchHintsManager {
                 ...existing,
                 ...rule,
                 keywords: mergedKeywords,
+                scope: options?.scope || existing.scope || (userHintsPath ? 'user' : 'notebook'),
                 updatedAt: now
             };
             data.confluenceHints[existingIndex] = finalRule;
@@ -150,13 +267,14 @@ export class SearchHintsManager {
                 ancestorId: rule.ancestorId,
                 ancestorTitle: rule.ancestorTitle,
                 guidance: rule.guidance || 'ユーザーフィードバックによる学習ルール',
+                scope: options?.scope || (userHintsPath ? 'user' : 'notebook'),
                 createdAt: now,
                 updatedAt: now
             };
             data.confluenceHints.push(finalRule);
         }
 
-        this.saveHints(notebookDir, data);
+        this.saveHints(savePath, data);
         return finalRule;
     }
 
@@ -165,7 +283,7 @@ export class SearchHintsManager {
      */
     static buildSuggestedCql(
         query: string,
-        notebookDir: string,
+        target: string | SearchHintsOptions,
         defaultSpaceKey?: string
     ): { cql: string; matchedHint?: SearchHintRule; appliedRules: string[] } {
         const trimmedQuery = query.trim();
@@ -175,7 +293,7 @@ export class SearchHintsManager {
             return { cql: '', appliedRules };
         }
 
-        const data = this.loadHints(notebookDir);
+        const data = this.loadHints(target);
         const lowerQuery = trimmedQuery.toLowerCase();
 
         // クエリとキーワード・トピックの前方・部分一致を検索

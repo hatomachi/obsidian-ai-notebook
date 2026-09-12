@@ -114,9 +114,67 @@ async function runTests() {
             notebookTitle: 'テスト用ノートブック'
         });
 
-        assert(claudeMd.includes('## 🧭 外部ソース探索の知恵 (Search Hints)'), 'Search Hints セクションが存在しません');
+        assert(claudeMd.includes('Search Hints'), 'Search Hints セクションが存在しません');
         assert(claudeMd.includes('@HINTS.md'), '@HINTS.md の参照指示が含まれていません');
         console.log('  -> OK: CLAUDE.md に @HINTS.md の探索知恵が自動注入されました！');
+
+        // Step 6: ユーザー共通 HINTS.md と ノートブック固有 HINTS.md の2層化マージ検証
+        console.log('Step 6: ユーザー共通 HINTS.md と ノートブック固有 HINTS.md の2層化マージ検証');
+        const userRootDir = path.join(tempDir, 'users', 'alice');
+        const nb1Dir = path.join(userRootDir, 'notebooks', 'nb1');
+        const nb2Dir = path.join(userRootDir, 'notebooks', 'nb2');
+        fs.mkdirSync(nb1Dir, { recursive: true });
+        fs.mkdirSync(nb2Dir, { recursive: true });
+
+        // nb1 から学習 -> ユーザー共通 users/alice/HINTS.md に保存される
+        SearchHintsManager.learnHint(nb1Dir, {
+            topic: '課金',
+            keywords: ['課金', 'billing', '決済'],
+            spaceKey: 'BILLING',
+            ancestorId: '20001',
+            ancestorTitle: '決済基盤',
+            guidance: '課金関係はBILLINGスペース配下を検索'
+        });
+
+        const userHintsPath = path.join(userRootDir, 'HINTS.md');
+        assert(fs.existsSync(userHintsPath), 'users/alice/HINTS.md が生成されていません');
+        const userHintsContent = fs.readFileSync(userHintsPath, 'utf-8');
+        assert(userHintsContent.includes('BILLING'));
+        assert(userHintsContent.includes('20001'));
+
+        // nb2 には HINTS.md がないが、ユーザー共通の知恵が自動で効く
+        const nb2QueryRes = SearchHintsManager.buildSuggestedCql('決済仕様', nb2Dir);
+        assert(nb2QueryRes.matchedHint, 'nb2 でユーザー共通ヒントがマッチしていません');
+        assert.strictEqual(nb2QueryRes.matchedHint.spaceKey, 'BILLING');
+        assert.strictEqual(nb2QueryRes.matchedHint.ancestorId, '20001');
+        assert.strictEqual(nb2QueryRes.cql, 'space = "BILLING" AND ancestor = "20001" AND text ~ "決済仕様"');
+        console.log('  -> OK: nb2 (ローカルHINTSなし) でもユーザー共通の探索知恵が自動継承されました！');
+
+        // nb2 固有スコープで学習 -> nb2/HINTS.md にのみ保存され、マージされる
+        SearchHintsManager.learnHint(nb2Dir, {
+            topic: 'インフラ',
+            keywords: ['インフラ', 'k8s', 'terraform'],
+            spaceKey: 'INFRA',
+            ancestorId: '30001',
+            ancestorTitle: 'EKSクラスタ構成',
+            guidance: 'nb2プロジェクト固有のインフラ情報'
+        }, { scope: 'notebook' });
+
+        const nb2HintsPath = path.join(nb2Dir, 'HINTS.md');
+        assert(fs.existsSync(nb2HintsPath), 'nb2/HINTS.md が生成されていません');
+        // ユーザー共通には「インフラ」が含まれていないことを確認
+        assert(!fs.readFileSync(userHintsPath, 'utf-8').includes('INFRA'), 'ユーザー共通にノートブック固有ルールが漏洩しています');
+
+        // nb2 から検索すると「課金」(user) も「インフラ」(notebook) も両方利用可能
+        const nb2InfraRes = SearchHintsManager.buildSuggestedCql('k8s設定', nb2Dir);
+        assert(nb2InfraRes.matchedHint, 'nb2 でノートブック固有ヒントがマッチしていません');
+        assert.strictEqual(nb2InfraRes.matchedHint.spaceKey, 'INFRA');
+        assert.strictEqual(nb2InfraRes.matchedHint.scope, 'notebook');
+
+        const nb2BillingRes = SearchHintsManager.buildSuggestedCql('課金', nb2Dir);
+        assert(nb2BillingRes.matchedHint, 'nb2 でユーザー共通ヒントがマッチしていません');
+        assert.strictEqual(nb2BillingRes.matchedHint.spaceKey, 'BILLING');
+        console.log('  -> OK: ユーザー共通とノートブック固有の階層マージが正常に機能しています！');
 
     } finally {
         await simulator.stop();

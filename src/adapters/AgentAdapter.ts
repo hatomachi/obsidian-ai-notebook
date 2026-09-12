@@ -6,7 +6,7 @@ import * as os from 'os';
 
 export const execAsync = promisify(exec);
 
-import { LinkedContext, MattermostChannelRef, AgentDebugInfo } from '../types';
+import { ConfluenceServerConfig, LinkedContext, MattermostChannelRef, AgentDebugInfo } from '../types';
 import { ensureNotebookProject, buildClaudeMdContent, NotebookProjectResult } from '../services/NotebookProjectFile';
 
 export interface AgentOptions {
@@ -17,6 +17,8 @@ export interface AgentOptions {
     linkedContexts?: LinkedContext[]; // リンクされた別ノートブックの成果物・ナレッジ群
     boundFolderTreeText?: string;     // バインドされた外部フォルダ資産の階層ツリー概要（読み取り専用・実パス秘匿）
     boundMmChannels?: MattermostChannelRef[]; // 連携されたMattermostチャンネル情報
+    confluenceConfig?: ConfluenceServerConfig; // Confluence 接続設定
+    userHintsPath?: string;                  // ユーザー共通 HINTS.md の絶対パス
     onStdoutChunk?: (chunk: string) => void; // ストリーミング用コールバック
     abortSignal?: AbortSignal;               // キャンセル用シグナル
 
@@ -336,7 +338,9 @@ export function prepareNotebookProject(options: AgentOptions): NotebookProjectRe
         linkedContexts: options.linkedContexts,
         boundFolderPath: options.boundFolderPath,
         boundFolderTreeText: options.boundFolderTreeText,
-        boundMmChannels: options.boundMmChannels
+        boundMmChannels: options.boundMmChannels,
+        confluenceConfig: options.confluenceConfig,
+        userHintsPath: options.userHintsPath
     });
 }
 
@@ -357,7 +361,9 @@ export function buildFallbackPrompt(userPrompt: string, options: AgentOptions): 
         linkedContexts: options.linkedContexts,
         boundFolderPath: options.boundFolderPath,
         boundFolderTreeText: options.boundFolderTreeText,
-        boundMmChannels: options.boundMmChannels
+        boundMmChannels: options.boundMmChannels,
+        confluenceConfig: options.confluenceConfig,
+        userHintsPath: options.userHintsPath
     });
     return `${projectContext}\n\n---\n\n${userPrompt}\n`;
 }

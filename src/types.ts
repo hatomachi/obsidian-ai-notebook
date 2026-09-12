@@ -361,6 +361,7 @@ export interface SearchHintRule {
     ancestorId?: string;        // 推奨親ページID (例: "10002")
     ancestorTitle?: string;     // 推奨親ページタイトル (例: "2025年リニューアル")
     guidance: string;           // 人間からのアドバイス・理由 (例: "全社検索はノイズが多い。2025年リニューアル配下を優先検索すること")
+    scope?: 'user' | 'notebook';// ユーザー共通 or ノートブック固有
     createdAt: string;
     updatedAt: string;
 }

@@ -1,4 +1,5 @@
 import { App, Modal, Notice } from 'obsidian';
+import * as path from 'path';
 import type AINotebookPlugin from '../../main';
 import { NotebookManager } from '../../services/NotebookManager';
 import { ConfluencePageSummary, ConfluenceServerConfig } from '../../types';
@@ -11,6 +12,7 @@ export class ConfluenceSearchModal extends Modal {
     onImportCallback?: () => void;
 
     private notebookDir: string = '';
+    private userHintsPath: string = '';
     private selectedServerId: string = '';
     private query: string = '';
     private customCql: string = '';
@@ -19,6 +21,13 @@ export class ConfluenceSearchModal extends Modal {
     private selectedPageIds: Set<string> = new Set();
     private isSearching: boolean = false;
     private isImporting: boolean = false;
+
+    // DOM要素参照（インプレース更新用）
+    private cqlBadgeEl?: HTMLElement;
+    private cqlTextEl?: HTMLElement;
+    private topicInputEl?: HTMLInputElement;
+    private ancestorInputEl?: HTMLInputElement;
+    private guidanceInputEl?: HTMLInputElement;
 
     // 学習用フィールド
     private learnFeedback: boolean = true;
@@ -46,6 +55,14 @@ export class ConfluenceSearchModal extends Modal {
 
     async onOpen(): Promise<void> {
         this.notebookDir = await this.notebookManager.getNotebookDir(this.notebookId);
+        const vaultBasePath = (this.app.vault.adapter as any).getBasePath?.() || '';
+        this.userHintsPath = path.join(
+            vaultBasePath,
+            this.plugin.settings.rootDir,
+            'users',
+            this.notebookManager.getEffectiveUsername(),
+            'HINTS.md'
+        );
         this.render();
     }
 
@@ -127,17 +144,23 @@ export class ConfluenceSearchModal extends Modal {
 
         const { cql, matchedHint, appliedRules } = SearchHintsManager.buildSuggestedCql(
             this.query,
-            this.notebookDir,
+            { notebookDir: this.notebookDir, userHintsPath: this.userHintsPath },
             this.currentServer?.defaultSpaceKey
         );
 
         const badgeRow = cqlContainer.createDiv({ attr: { style: 'display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;' } });
+        this.cqlBadgeEl = badgeRow.createSpan();
         if (matchedHint) {
-            const hintBadge = badgeRow.createSpan({ cls: 'ai-notebook-badge', attr: { style: 'background: rgba(33, 150, 243, 0.2); color: var(--text-accent); padding: 2px 8px; border-radius: 12px; font-weight: 500;' } });
-            hintBadge.setText(`🎯 HINTS.md 適用中: ${matchedHint.topic} (${appliedRules.join(', ')})`);
+            this.cqlBadgeEl.className = 'ai-notebook-badge';
+            this.cqlBadgeEl.style.background = 'rgba(33, 150, 243, 0.2)';
+            this.cqlBadgeEl.style.color = 'var(--text-accent)';
+            this.cqlBadgeEl.style.padding = '2px 8px';
+            this.cqlBadgeEl.style.borderRadius = '12px';
+            this.cqlBadgeEl.style.fontWeight = '500';
+            this.cqlBadgeEl.setText(`🎯 HINTS.md 適用中: ${matchedHint.topic} (${appliedRules.join(', ')})`);
         } else {
-            const normalBadge = badgeRow.createSpan({ attr: { style: 'color: var(--text-muted);' } });
-            normalBadge.setText('💡 ヒント未適用 (全社検索)');
+            this.cqlBadgeEl.style.color = 'var(--text-muted)';
+            this.cqlBadgeEl.setText('💡 ヒント未適用 (全社検索)');
         }
 
         const toggleCqlLink = badgeRow.createEl('a', { text: this.isCustomCql ? '簡易検索に戻す' : 'CQLを編集', attr: { style: 'cursor: pointer; color: var(--text-muted); text-decoration: underline;' } });
@@ -157,7 +180,7 @@ export class ConfluenceSearchModal extends Modal {
                 this.customCql = cqlInput.value;
             };
         } else {
-            cqlContainer.createDiv({ text: `CQL: ${cqlText || '(キーワードを入力してください)'}`, attr: { style: 'font-family: monospace; color: var(--text-muted); word-break: break-all;' } });
+            this.cqlTextEl = cqlContainer.createDiv({ text: `CQL: ${cqlText || '(キーワードを入力してください)'}`, attr: { style: 'font-family: monospace; color: var(--text-muted); word-break: break-all;' } });
         }
 
         // 検索結果リスト（スクロール領域）
@@ -246,33 +269,50 @@ export class ConfluenceSearchModal extends Modal {
             this.learnFeedback = learnCb.checked;
             this.render();
         };
-        learnRow.createEl('label', { text: '🧭 今回の探索の知恵を HINTS.md に記憶・再帰育成する', attr: { style: 'font-weight: 500;' } });
+        learnRow.createEl('label', { text: '🧭 今回の探索の知恵を HINTS.md（ユーザー共通）に記憶・再帰育成する', attr: { style: 'font-weight: 500;' } });
 
         if (this.learnFeedback) {
-            const hintForm = footerContainer.createDiv({ attr: { style: 'display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; font-size: 0.85em;' } });
-            
-            const topicGroup = hintForm.createDiv();
-            topicGroup.createEl('label', { text: 'トピック名' });
-            const topicInput = topicGroup.createEl('input', { type: 'text', value: this.learnTopic, placeholder: '例: 認証' });
-            topicInput.oninput = () => { this.learnTopic = topicInput.value; };
+            const hintForm = footerContainer.createDiv({
+                attr: { style: 'display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-bottom: 10px; font-size: 0.85em;' }
+            });
 
-            const ancestorGroup = hintForm.createDiv();
-            ancestorGroup.createEl('label', { text: '親階層 (Ancestor ID または タイトル)' });
-            const ancestorInput = ancestorGroup.createEl('input', { type: 'text', value: this.learnAncestorTitle || this.learnAncestorId, placeholder: '例: 2025年リニューアル' });
-            ancestorInput.oninput = () => {
-                this.learnAncestorTitle = ancestorInput.value;
-                this.learnAncestorId = ancestorInput.value;
+            // トピック名
+            const topicGroup = hintForm.createDiv({ attr: { style: 'display: flex; flex-direction: column; gap: 4px;' } });
+            topicGroup.createEl('label', { text: 'トピック名', attr: { style: 'display: block; font-weight: 500; color: var(--text-muted);' } });
+            this.topicInputEl = topicGroup.createEl('input', {
+                type: 'text',
+                value: this.learnTopic,
+                placeholder: '例: 認証',
+                attr: { style: 'width: 100%; box-sizing: border-box;' }
+            });
+            this.topicInputEl.oninput = () => { this.learnTopic = this.topicInputEl!.value; };
+
+            // 親階層
+            const ancestorGroup = hintForm.createDiv({ attr: { style: 'display: flex; flex-direction: column; gap: 4px;' } });
+            ancestorGroup.createEl('label', { text: '親階層 (Ancestor ID または タイトル)', attr: { style: 'display: block; font-weight: 500; color: var(--text-muted);' } });
+            this.ancestorInputEl = ancestorGroup.createEl('input', {
+                type: 'text',
+                value: this.learnAncestorTitle || this.learnAncestorId,
+                placeholder: '例: 2025年リニューアル',
+                attr: { style: 'width: 100%; box-sizing: border-box;' }
+            });
+            this.ancestorInputEl.oninput = () => {
+                this.learnAncestorTitle = this.ancestorInputEl!.value;
+                this.learnAncestorId = this.ancestorInputEl!.value;
             };
 
-            const guidanceGroup = footerContainer.createDiv({ attr: { style: 'margin-bottom: 8px; font-size: 0.85em;' } });
-            guidanceGroup.createEl('label', { text: '理由・助言（AIへの指示）' });
-            const guidanceInput = guidanceGroup.createEl('input', {
+            // 理由・助言
+            const guidanceGroup = footerContainer.createDiv({
+                attr: { style: 'display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; font-size: 0.85em;' }
+            });
+            guidanceGroup.createEl('label', { text: '理由・助言（AIへの指示）', attr: { style: 'display: block; font-weight: 500; color: var(--text-muted);' } });
+            this.guidanceInputEl = guidanceGroup.createEl('input', {
                 type: 'text',
                 value: this.learnGuidance,
                 placeholder: '例: 全社検索は古い仕様が多い。2025年リニューアル配下を最優先すること。',
-                attr: { style: 'width: 100%;' }
+                attr: { style: 'width: 100%; box-sizing: border-box;' }
             });
-            guidanceInput.oninput = () => { this.learnGuidance = guidanceInput.value; };
+            this.guidanceInputEl.oninput = () => { this.learnGuidance = this.guidanceInputEl!.value; };
         }
 
         // アクションボタン
@@ -290,7 +330,36 @@ export class ConfluenceSearchModal extends Modal {
     }
 
     private updateCqlSuggestion(): void {
-        this.render();
+        const { cql, matchedHint, appliedRules } = SearchHintsManager.buildSuggestedCql(
+            this.query,
+            { notebookDir: this.notebookDir, userHintsPath: this.userHintsPath },
+            this.currentServer?.defaultSpaceKey
+        );
+
+        if (this.cqlBadgeEl) {
+            this.cqlBadgeEl.empty();
+            if (matchedHint) {
+                this.cqlBadgeEl.className = 'ai-notebook-badge';
+                this.cqlBadgeEl.style.background = 'rgba(33, 150, 243, 0.2)';
+                this.cqlBadgeEl.style.color = 'var(--text-accent)';
+                this.cqlBadgeEl.style.padding = '2px 8px';
+                this.cqlBadgeEl.style.borderRadius = '12px';
+                this.cqlBadgeEl.style.fontWeight = '500';
+                this.cqlBadgeEl.setText(`🎯 HINTS.md 適用中: ${matchedHint.topic} (${appliedRules.join(', ')})`);
+            } else {
+                this.cqlBadgeEl.className = '';
+                this.cqlBadgeEl.style.color = 'var(--text-muted)';
+                this.cqlBadgeEl.setText('💡 ヒント未適用 (全社検索)');
+            }
+        }
+
+        if (this.cqlTextEl && !this.isCustomCql) {
+            this.cqlTextEl.setText(`CQL: ${cql || '(キーワードを入力してください)'}`);
+        }
+
+        if (this.topicInputEl) {
+            this.topicInputEl.value = this.learnTopic;
+        }
     }
 
     private async executeSearch(): Promise<void> {
@@ -301,7 +370,7 @@ export class ConfluenceSearchModal extends Modal {
 
         const { cql } = SearchHintsManager.buildSuggestedCql(
             this.query,
-            this.notebookDir,
+            { notebookDir: this.notebookDir, userHintsPath: this.userHintsPath },
             this.currentServer?.defaultSpaceKey
         );
         const finalCql = this.isCustomCql && this.customCql.trim() ? this.customCql.trim() : cql;
@@ -355,14 +424,17 @@ export class ConfluenceSearchModal extends Modal {
         // HINTS.md 学習の保存
         if (this.learnFeedback && this.learnTopic.trim()) {
             try {
-                SearchHintsManager.learnHint(this.notebookDir, {
-                    topic: this.learnTopic.trim(),
-                    keywords: [this.learnTopic.trim(), ...this.query.split(/\s+/).filter(Boolean)],
-                    spaceKey: this.currentServer?.defaultSpaceKey,
-                    ancestorId: this.learnAncestorId.trim() || undefined,
-                    ancestorTitle: this.learnAncestorTitle.trim() || undefined,
-                    guidance: this.learnGuidance.trim() || 'ユーザーフィードバックによる学習ルール'
-                });
+                SearchHintsManager.learnHint(
+                    { notebookDir: this.notebookDir, userHintsPath: this.userHintsPath },
+                    {
+                        topic: this.learnTopic.trim(),
+                        keywords: [this.learnTopic.trim(), ...this.query.split(/\s+/).filter(Boolean)],
+                        spaceKey: this.currentServer?.defaultSpaceKey,
+                        ancestorId: this.learnAncestorId.trim() || undefined,
+                        ancestorTitle: this.learnAncestorTitle.trim() || undefined,
+                        guidance: this.learnGuidance.trim() || 'ユーザーフィードバックによる学習ルール'
+                    }
+                );
                 new Notice(`🧭 探索の知恵を HINTS.md に記憶しました`);
             } catch (e) {
                 console.warn('Failed to save search hint:', e);

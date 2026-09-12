@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { LinkedContext, MattermostChannelRef } from '../types';
+import { ConfluenceServerConfig, LinkedContext, MattermostChannelRef } from '../types';
+import { getConfluenceHelperScript } from './confluence/confluenceHelperTemplate';
 
 /**
  * L1: ノートブックフォルダを「本物のプロジェクト」にするための生成物。
@@ -25,6 +26,8 @@ export interface NotebookProjectInput {
     boundFolderPath?: string;
     boundFolderTreeText?: string;
     boundMmChannels?: MattermostChannelRef[];
+    confluenceConfig?: ConfluenceServerConfig;
+    userHintsPath?: string;
 }
 
 export interface NotebookProjectResult {
@@ -238,11 +241,32 @@ export function buildClaudeMdContent(input: NotebookProjectInput): string {
         md += `\n※決定事項や課題を反映する場合は、上記ファイルを直接読み込むこと。\n\n`;
     }
 
+    // Confluence 探索ツール & HINTS.md
     const hintsPath = path.join(input.notebookDir, 'HINTS.md');
-    if (fs.existsSync(hintsPath)) {
-        md += `## 🧭 外部ソース探索の知恵 (Search Hints)\n`;
-        md += `社内Wiki (Confluence) や外部共有フォルダを探索・参照する際は、過去に学習された探索方針に従ってノイズを避けてください：\n`;
-        md += `@HINTS.md\n\n`;
+    const hasLocalHints = fs.existsSync(hintsPath);
+    const userHintsPath = input.userHintsPath;
+    const hasUserHints = userHintsPath && fs.existsSync(userHintsPath);
+
+    md += `## 🌐 外部Wiki (Confluence) 自律探索 & 知恵の学習 (Search Hints)\n`;
+    md += `Confluenceの調査や仕様確認を指示された際は、以下のCLIヘルパーを使って自律的に検索・抽出を行ってください：\n\n`;
+    md += `1. **検索 (Search)**: \`node .tools/confluence.cjs search "<キーワードまたはCQL>"\`\n`;
+    md += `   - 過去に学習された探索の知恵（HINTS.md）を自動適用し、ノイズを排除して検索します。\n`;
+    md += `2. **抽出 (Extract)**: \`node .tools/confluence.cjs extract <page_id>\`\n`;
+    md += `   - 指定ページを Markdown 化して \`sources/confluence_{id}_{slug}.md\` に抽出保存します。抽出後は Read ツールで精読してください。\n`;
+    md += `3. **知恵の学習・再帰育成 (Learn Hint)**:\n`;
+    md += `   - 人間から「〇〇配下を探して」「その仕様は古い、△△を見ろ」等の助言・軌道修正を受けたら、必ず知恵を定着させてください：\n`;
+    md += `     \`node .tools/confluence.cjs hint --topic "<トピック名>" --ancestor "<親ページID>" --guidance "<理由や助言>"\`\n`;
+    md += `   - 学習した知恵はユーザー共通の \`HINTS.md\` に蓄積され、今後の全ノートブックで自動活用されます。\n\n`;
+
+    if (hasLocalHints || hasUserHints) {
+        md += `### 🧭 現在適用中の探索知恵 (Search Hints)\n`;
+        if (hasLocalHints) {
+            md += `@HINTS.md\n\n`;
+        }
+        if (hasUserHints && userHintsPath !== hintsPath) {
+            const relPath = path.relative(input.notebookDir, userHintsPath);
+            md += `@${relPath}\n\n`;
+        }
     }
 
     md += `## このノートブック固有の指示\n@NOTEBOOK.md\n`;
@@ -318,6 +342,37 @@ function mergeClaudeSettings(notebookDir: string, additionalReadDirs: string[]):
     }
 }
 
+function setupTools(input: NotebookProjectInput): void {
+    const toolsDir = path.join(input.notebookDir, '.tools');
+    if (!fs.existsSync(toolsDir)) {
+        fs.mkdirSync(toolsDir, { recursive: true });
+    }
+
+    // 1. .tools/confluence.cjs
+    const confluenceCjsPath = path.join(toolsDir, 'confluence.cjs');
+    writeIfChanged(confluenceCjsPath, getConfluenceHelperScript());
+
+    // 2. .tools/confluence-config.json
+    if (input.confluenceConfig) {
+        const configPath = path.join(toolsDir, 'confluence-config.json');
+        const configData = {
+            baseUrl: input.confluenceConfig.baseUrl,
+            authType: input.confluenceConfig.authType,
+            token: input.confluenceConfig.token,
+            username: input.confluenceConfig.username,
+            defaultSpaceKey: input.confluenceConfig.defaultSpaceKey,
+            userHintsPath: input.userHintsPath,
+            notebookHintsPath: path.join(input.notebookDir, 'HINTS.md')
+        };
+        writeIfChanged(configPath, JSON.stringify(configData, null, 2) + '\n');
+    }
+
+    // 3. .tools/.gitignore (config やスクラッチの Git コミット防止)
+    const gitignorePath = path.join(toolsDir, '.gitignore');
+    const gitignoreContent = `# Confluence config with tokens\nconfluence-config.json\n`;
+    writeIfChanged(gitignorePath, gitignoreContent);
+}
+
 /**
  * ノートブックフォルダにプロジェクトファイル群を生成し、--add-dir 対象を返す。
  * 実行のたびに呼んでよい（差分がなければ書き込まない）。
@@ -339,6 +394,9 @@ export function ensureNotebookProject(input: NotebookProjectInput): NotebookProj
         if (!fs.existsSync(notebookMdPath)) {
             writeIfChanged(notebookMdPath, NOTEBOOK_MD_TEMPLATE);
         }
+
+        // CLI ヘルパーツール (.tools/confluence.cjs 等) を自動配備
+        setupTools(input);
     } catch (e) {
         console.warn('[NotebookProjectFile] Failed to generate project files:', e);
     }

@@ -1497,6 +1497,8 @@ export class AINotebookDetailView extends ItemView {
                 boundFolderPath: effectiveBoundPath || undefined,
                 boundFolderTreeText: boundFolderTreeText,
                 boundMmChannels: this.metadata?.boundMmChannels || [],
+                confluenceConfig: this.plugin.confluenceService?.getServer(),
+                userHintsPath: path.join(vaultBasePath, this.plugin.settings.rootDir, 'users', this.plugin.notebookManager.getEffectiveUsername(), 'HINTS.md'),
                 // 対話履歴はテキストで再注入せず、CLI 側のセッションを --resume で引き継ぐ
                 agentSessionId: this.currentSession.agentSessionId,
                 resumeSession: !!this.currentSession.agentSessionId,
