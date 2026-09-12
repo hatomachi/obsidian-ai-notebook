@@ -71,6 +71,20 @@ assert.strictEqual(gitlabService.isConfigured('corp-gitlab'), true, '設定完�
 assert.strictEqual(gitlabService.isUploadsEnabled('corp-gitlab'), true, 'アップロード有効判定が正しいこと');
 console.log('  -> OK: マルチサーバー管理正常');
 
+// 3b. GitLab Upload URL 判定 & サーバー特定
+console.log('Test 3b: isGitLabUploadUrl & getServerForUrl');
+const testUploadUrl = 'https://gitlab.com/-/project/86381868/uploads/502e4426ddedc6b4720279a790702cf6/image.webp';
+const testCorpUploadUrl = 'https://gitlab.company.internal/uploads/abc/image.webp';
+const testOtherUrl = 'https://example.com/images/cat.png';
+
+assert.strictEqual(gitlabService.isGitLabUploadUrl(testUploadUrl), true, 'GitLab.com の Uploads URL を検知できること');
+assert.strictEqual(gitlabService.isGitLabUploadUrl(testCorpUploadUrl), true, '社内GitLab の Uploads URL を検知できること');
+assert.strictEqual(gitlabService.isGitLabUploadUrl(testOtherUrl), false, '一般画像URLは除外されること');
+
+const resolvedServer = gitlabService.getServerForUrl(testCorpUploadUrl);
+assert.strictEqual(resolvedServer?.id, 'corp-gitlab', '社内URLから適切なサーバーが解決されること');
+console.log('  -> OK: GitLab Upload URL 判定正常');
+
 // 4. バリデーション
 console.log('Test 4: プロジェクトID未設定時のアップロードバリデーション');
 (async () => {

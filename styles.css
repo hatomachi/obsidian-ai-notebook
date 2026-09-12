@@ -1437,6 +1437,25 @@
     margin-bottom: 6px;
 }
 
+/* GitLab 認証付き画像プレビュー状態 */
+img.ai-notebook-gitlab-loading {
+    opacity: 0.4;
+    filter: blur(1px);
+    transition: opacity 0.2s ease, filter 0.2s ease;
+}
+
+img.ai-notebook-gitlab-loaded {
+    opacity: 1;
+    filter: none;
+    transition: opacity 0.3s ease;
+}
+
+img.ai-notebook-gitlab-error {
+    opacity: 0.5;
+    border: 1px dashed var(--text-error);
+    border-radius: 4px;
+}
+
 /* Bound Folder Section in Left Panel */
 .ai-notebook-bound-section {
     border-bottom: 1px solid var(--background-modifier-border);

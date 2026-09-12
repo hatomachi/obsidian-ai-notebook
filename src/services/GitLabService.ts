@@ -61,6 +61,7 @@ export function getGitLabHostUrl(rawUrl: string): string {
 
 export class GitLabService {
     private settings: AINotebookSettings;
+    private imageBlobUrlCache = new Map<string, string>();
 
     constructor(settings: AINotebookSettings) {
         this.settings = settings;
@@ -68,6 +69,19 @@ export class GitLabService {
 
     updateSettings(newSettings: AINotebookSettings): void {
         this.settings = newSettings;
+        this.clearImageCache();
+    }
+
+    /**
+     * キャッシュされた Blob URL を解放
+     */
+    clearImageCache(): void {
+        for (const blobUrl of this.imageBlobUrlCache.values()) {
+            try {
+                URL.revokeObjectURL(blobUrl);
+            } catch {}
+        }
+        this.imageBlobUrlCache.clear();
     }
 
     /**
@@ -320,5 +334,100 @@ export class GitLabService {
         }
 
         return await res.arrayBuffer();
+    }
+
+    /**
+     * 指定された URL が GitLab Uploads の画像 URL かどうか判定
+     */
+    isGitLabUploadUrl(url: string): boolean {
+        if (!url || typeof url !== 'string') return false;
+        const trimmed = url.trim();
+        if (!trimmed.includes('/uploads/')) return false;
+
+        // 登録済みサーバーのホストURLが含まれているか
+        const servers = this.getServers();
+        for (const s of servers) {
+            const host = getGitLabHostUrl(s.baseUrl);
+            if (host && trimmed.startsWith(host)) {
+                return true;
+            }
+        }
+
+        // gitlab.com または 一般的な GitLab URL パターン
+        if (trimmed.includes('gitlab.com/') || trimmed.includes('/-/project/')) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * URLから対応する GitLab サーバー設定を特定
+     */
+    getServerForUrl(url: string): GitLabServerConfig | undefined {
+        const servers = this.getServers();
+        if (servers.length === 0) return undefined;
+
+        for (const s of servers) {
+            const host = getGitLabHostUrl(s.baseUrl);
+            if (host && url.startsWith(host)) {
+                return s;
+            }
+        }
+
+        // gitlab.com の場合、ホストが一致するサーバーを探す
+        if (url.includes('gitlab.com')) {
+            const glComServer = servers.find(s => s.baseUrl.includes('gitlab.com'));
+            if (glComServer) return glComServer;
+        }
+
+        // 見つからなければデフォルトサーバー
+        return this.getServer();
+    }
+
+    /**
+     * GitLab の認証付き画像 URL から Blob URL を取得（メモリキャッシュ付き）
+     */
+    async getAuthenticatedImageUrl(url: string): Promise<string> {
+        const trimmedUrl = url.trim();
+        if (this.imageBlobUrlCache.has(trimmedUrl)) {
+            return this.imageBlobUrlCache.get(trimmedUrl)!;
+        }
+
+        const server = this.getServerForUrl(trimmedUrl);
+        const headers: Record<string, string> = {};
+        if (server?.token) {
+            headers['PRIVATE-TOKEN'] = server.token.trim();
+        }
+
+        const res = await fetch(trimmedUrl, {
+            method: 'GET',
+            headers
+        });
+
+        if (!res.ok) {
+            throw new Error(`GitLab 画像取得失敗 (HTTP ${res.status}): ${res.statusText}`);
+        }
+
+        const contentType = res.headers.get('content-type');
+        let mimeType = 'image/webp';
+        if (contentType && contentType.startsWith('image/')) {
+            mimeType = contentType.split(';')[0].trim();
+        } else {
+            const clean = trimmedUrl.split('?')[0].toLowerCase();
+            if (clean.endsWith('.png')) mimeType = 'image/png';
+            else if (clean.endsWith('.jpg') || clean.endsWith('.jpeg')) mimeType = 'image/jpeg';
+            else if (clean.endsWith('.gif')) mimeType = 'image/gif';
+            else if (clean.endsWith('.svg')) mimeType = 'image/svg+xml';
+            else if (clean.endsWith('.bmp')) mimeType = 'image/bmp';
+        }
+
+        const arrayBuffer = await res.arrayBuffer();
+        const uint8Array = new Uint8Array(arrayBuffer);
+        const blob = new Blob([uint8Array as any], { type: mimeType });
+        const blobUrl = URL.createObjectURL(blob);
+
+        this.imageBlobUrlCache.set(trimmedUrl, blobUrl);
+        return blobUrl;
     }
 }

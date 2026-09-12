@@ -62,6 +62,33 @@ export default class AINotebookPlugin extends Plugin {
                 this.activateGalleryView();
             }
         });
+
+        // 🦊 GitLab Uploads 認証付き画像プレビューの自動レンダリング
+        this.registerMarkdownPostProcessor(async (el, ctx) => {
+            const images = el.querySelectorAll('img');
+            for (let i = 0; i < images.length; i++) {
+                const img = images[i];
+                const src = img.getAttribute('src');
+                if (!src) continue;
+
+                if (this.gitlabService && this.gitlabService.isGitLabUploadUrl(src)) {
+                    img.addClass('ai-notebook-gitlab-loading');
+                    try {
+                        const blobUrl = await this.gitlabService.getAuthenticatedImageUrl(src);
+                        if (blobUrl) {
+                            img.src = blobUrl;
+                            img.removeClass('ai-notebook-gitlab-loading');
+                            img.addClass('ai-notebook-gitlab-loaded');
+                        }
+                    } catch (err: any) {
+                        console.error('[AI Notebook] GitLab 画像プレビュー取得失敗:', src, err);
+                        img.removeClass('ai-notebook-gitlab-loading');
+                        img.addClass('ai-notebook-gitlab-error');
+                        img.setAttribute('title', `GitLab 画像の取得に失敗しました: ${err?.message || err}`);
+                    }
+                }
+            }
+        });
     }
 
     async activateGalleryView(): Promise<void> {
@@ -112,6 +139,9 @@ export default class AINotebookPlugin extends Plugin {
 
     onunload(): void {
         console.log('Unloading Obsidian AI Notebook Plugin');
+        if (this.gitlabService) {
+            this.gitlabService.clearImageCache();
+        }
     }
 
     async loadSettings(): Promise<void> {
