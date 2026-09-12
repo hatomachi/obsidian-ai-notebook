@@ -30,6 +30,7 @@ export interface NotebookMetadata {
     boundMmChannels?: MattermostChannelRef[]; // 💬 ノートブック単位のバインドMattermostチャンネル一覧
     gitlabServerId?: string; // 🦊 Notebook単位のバインドGitLabサーバーID
     gitlabProjectId?: string; // 🦊 Notebook単位のバインドGitLabプロジェクトID/パス
+    confluenceServerId?: string; // 🌐 Notebook単位のバインドConfluenceサーバーID
     userName?: string; // 👤 所有ユーザー名 (縄張りモデル)
     isRemote?: boolean; // ☁️ GitLab上のリモートノートブック（ローカル未実体化）
     remoteServerId?: string; // ☁️ リモート保存先GitLabサーバーID
@@ -295,6 +296,80 @@ export interface GitLabUploadResult {
     error?: string;
 }
 
+export interface ConfluenceServerConfig {
+    id: string;               // 一意なID (UUID または slug)
+    name: string;             // 表示名 (例: "社内本番Confluence", "ローカルモック")
+    baseUrl: string;          // ホストURL (例: "http://localhost:3000" または "https://confluence.example.com")
+    authType: 'bearer' | 'basic'; // Bearer (PAT) または Basic (Cloud API Token)
+    username?: string;        // Basic認証用 (email / username)
+    token: string;            // Bearerトークン または APIトークン / パスワード
+    defaultSpaceKey?: string; // デフォルト検索スペース (例: "DEV-ARCH")
+}
+
+export interface ConfluenceAncestor {
+    id: string;
+    title: string;
+}
+
+export interface ConfluenceSpace {
+    id?: number | string;
+    key: string;
+    name: string;
+}
+
+export interface ConfluenceVersion {
+    number: number;
+    when?: string;
+    message?: string;
+    by?: {
+        displayName?: string;
+        username?: string;
+    };
+}
+
+export interface ConfluencePageSummary {
+    id: string;
+    title: string;
+    type: 'page' | 'blogpost';
+    status: string;
+    space?: ConfluenceSpace;
+    ancestors?: ConfluenceAncestor[];
+    version?: ConfluenceVersion;
+    webuiUrl?: string;
+    url?: string;
+}
+
+export interface ConfluencePageDetail extends ConfluencePageSummary {
+    bodyStorage?: string; // XHTML / Storage format
+    bodyView?: string;    // HTML view format
+    markdown?: string;    // 変換後 Markdown
+}
+
+export interface ConfluenceSearchResult {
+    results: ConfluencePageSummary[];
+    start: number;
+    limit: number;
+    size: number;
+    totalSize?: number;
+}
+
+export interface SearchHintRule {
+    id: string;
+    topic: string;              // 例: "認証", "見積", "インフラ"
+    keywords: string[];         // マッチするキーワード (例: ["認証", "auth", "jwt", "トークン"])
+    spaceKey?: string;          // 推奨スペース (例: "DEV-ARCH")
+    ancestorId?: string;        // 推奨親ページID (例: "10002")
+    ancestorTitle?: string;     // 推奨親ページタイトル (例: "2025年リニューアル")
+    guidance: string;           // 人間からのアドバイス・理由 (例: "全社検索はノイズが多い。2025年リニューアル配下を優先検索すること")
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface SearchHintsData {
+    confluenceHints: SearchHintRule[];
+    generalNotes?: string;
+}
+
 export interface AINotebookSettings {
     rootDir: string;
     activeAgent: AIAgentType;
@@ -315,6 +390,9 @@ export interface AINotebookSettings {
     gitlabUploadsEnabled?: boolean;         // バイナリをGitLab Uploadsに自動オフロードするか (デフォルト: true)
     // 👤 チーム共用 & 縄張りモデル設定 (Step 3)
     userName?: string;                      // ユーザー名 / 縄張りID (未設定時はOSユーザー名自動推測)
+    // 🌐 Confluence 連携設定
+    confluenceServers?: ConfluenceServerConfig[]; // 登録されたConfluenceサーバー一覧
+    defaultConfluenceServerId?: string;          // デフォルトで使用するConfluenceサーバーID
 }
 
 export const DEFAULT_SETTINGS: AINotebookSettings = {
@@ -334,7 +412,10 @@ export const DEFAULT_SETTINGS: AINotebookSettings = {
     gitlabServers: [],
     defaultGitLabServerId: '',
     gitlabUploadsEnabled: true,
-    userName: ''
+    userName: '',
+    confluenceServers: [],
+    defaultConfluenceServerId: ''
 };
+
 
 

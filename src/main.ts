@@ -4,6 +4,7 @@ import { AINotebookSettingTab } from './settings';
 import { NotebookManager } from './services/NotebookManager';
 import { MattermostService } from './services/MattermostService';
 import { GitLabService } from './services/GitLabService';
+import { ConfluenceService } from './services/ConfluenceService';
 import { AINotebookGalleryView, VIEW_TYPE_GALLERY } from './views/GalleryView';
 import { AINotebookDetailView, VIEW_TYPE_DETAIL } from './views/NotebookDetailView';
 
@@ -12,6 +13,7 @@ export default class AINotebookPlugin extends Plugin {
     notebookManager!: NotebookManager;
     mattermostService!: MattermostService;
     gitlabService!: GitLabService;
+    confluenceService!: ConfluenceService;
 
     async onload(): Promise<void> {
         console.log('Loading Obsidian AI Notebook Plugin');
@@ -19,6 +21,7 @@ export default class AINotebookPlugin extends Plugin {
         await this.loadSettings();
 
         this.gitlabService = new GitLabService(this.settings);
+        this.confluenceService = new ConfluenceService(this.settings);
         this.notebookManager = new NotebookManager(this.app, this.settings, this.gitlabService);
         this.mattermostService = new MattermostService(this.settings);
 

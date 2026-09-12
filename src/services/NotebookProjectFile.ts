@@ -238,6 +238,13 @@ export function buildClaudeMdContent(input: NotebookProjectInput): string {
         md += `\n※決定事項や課題を反映する場合は、上記ファイルを直接読み込むこと。\n\n`;
     }
 
+    const hintsPath = path.join(input.notebookDir, 'HINTS.md');
+    if (fs.existsSync(hintsPath)) {
+        md += `## 🧭 外部ソース探索の知恵 (Search Hints)\n`;
+        md += `社内Wiki (Confluence) や外部共有フォルダを探索・参照する際は、過去に学習された探索方針に従ってノイズを避けてください：\n`;
+        md += `@HINTS.md\n\n`;
+    }
+
     md += `## このノートブック固有の指示\n@NOTEBOOK.md\n`;
     return md;
 }

@@ -3,6 +3,7 @@ import type AINotebookPlugin from './main';
 import { AIAgentType } from './types';
 import { MattermostPresetModal } from './views/modals/MattermostPresetModal';
 import { GitLabServerModal } from './views/modals/GitLabServerModal';
+import { ConfluenceServerModal } from './views/modals/ConfluenceServerModal';
 
 export class AINotebookSettingTab extends PluginSettingTab {
     plugin: AINotebookPlugin;
@@ -334,6 +335,101 @@ export class AINotebookSettingTab extends PluginSettingTab {
                         }
                         await this.plugin.saveSettings();
                         new Notice(`GitLab サーバー「${s.name}」を削除しました`);
+                        this.display();
+                    }));
+            }
+        }
+
+        // ============================================================
+        // 🌐 Confluence 連携設定 (ナレッジ精錬工場)
+        // ============================================================
+        containerEl.createEl('h3', { text: '🌐 Confluence 連携設定 (ナレッジ精錬工場)' });
+
+        const confluenceServers = this.plugin.settings.confluenceServers || [];
+
+        if (confluenceServers.length > 0) {
+            new Setting(containerEl)
+                .setName('既定の Confluence サーバー')
+                .setDesc('ノートブック検索時に自動選択される優先サーバーを選択します')
+                .addDropdown(dropdown => {
+                    for (const s of confluenceServers) {
+                        dropdown.addOption(s.id, `${s.name} (${s.baseUrl})`);
+                    }
+                    dropdown.setValue(this.plugin.settings.defaultConfluenceServerId || confluenceServers[0].id);
+                    dropdown.onChange(async (value) => {
+                        this.plugin.settings.defaultConfluenceServerId = value;
+                        await this.plugin.saveSettings();
+                    });
+                });
+        }
+
+        const confHeaderSetting = new Setting(containerEl)
+            .setName('登録済み Confluence サーバー一覧')
+            .setDesc('社内本番Wiki、検証用Wiki、ローカルモックサーバーなどを登録できます');
+
+        confHeaderSetting.addButton(btn => btn
+            .setButtonText('➕ 新規サーバー追加')
+            .setCta()
+            .onClick(() => {
+                new ConfluenceServerModal(this.app, this.plugin, null, () => {
+                    this.display();
+                }).open();
+            }));
+
+        if (confluenceServers.length === 0) {
+            const emptyConfEl = containerEl.createDiv({ cls: 'ai-notebook-empty-box' });
+            emptyConfEl.createDiv({
+                text: '登録されている Confluence サーバーはありません。「新規サーバー追加」から社内Wikiを登録すると、オンデマンドCQL検索・ナレッジ抽出・HINTS.md学習ループが利用可能になります。',
+                cls: 'ai-notebook-empty-text'
+            });
+        } else {
+            const confListContainer = containerEl.createDiv({ cls: 'ai-notebook-settings-preset-list' });
+            for (const s of confluenceServers) {
+                const isDefault = (this.plugin.settings.defaultConfluenceServerId === s.id) || (confluenceServers.length === 1);
+                const defaultBadge = isDefault ? ' ★既定' : '';
+                const spaceText = s.defaultSpaceKey ? ` / スペース: ${s.defaultSpaceKey}` : '';
+                const authText = s.authType === 'basic' ? `[Basic: ${s.username || 'user'}]` : '[Bearer PAT]';
+
+                const itemSetting = new Setting(confListContainer)
+                    .setName(`🌐 ${s.name}${defaultBadge}`)
+                    .setDesc(`URL: ${s.baseUrl} ${authText}${spaceText}`);
+
+                // 疎通テストボタン
+                itemSetting.addButton(btn => btn
+                    .setButtonText('🔌 テスト')
+                    .onClick(async () => {
+                        btn.setButtonText('確認中...');
+                        btn.setDisabled(true);
+                        const res = await (this.plugin as any).confluenceService.testConnection(s);
+                        btn.setButtonText('🔌 テスト');
+                        btn.setDisabled(false);
+                        if (res.success) {
+                            new Notice(res.message, 6000);
+                        } else {
+                            new Notice(`❌ ${res.message}`, 8000);
+                        }
+                    }));
+
+                // 編集ボタン
+                itemSetting.addButton(btn => btn
+                    .setButtonText('編集')
+                    .onClick(() => {
+                        new ConfluenceServerModal(this.app, this.plugin, s, () => {
+                            this.display();
+                        }).open();
+                    }));
+
+                // 削除ボタン
+                itemSetting.addButton(btn => btn
+                    .setButtonText('削除')
+                    .setWarning()
+                    .onClick(async () => {
+                        this.plugin.settings.confluenceServers = confluenceServers.filter(item => item.id !== s.id);
+                        if (this.plugin.settings.defaultConfluenceServerId === s.id) {
+                            this.plugin.settings.defaultConfluenceServerId = this.plugin.settings.confluenceServers[0]?.id || '';
+                        }
+                        await this.plugin.saveSettings();
+                        new Notice(`Confluence サーバー「${s.name}」を削除しました`);
                         this.display();
                     }));
             }

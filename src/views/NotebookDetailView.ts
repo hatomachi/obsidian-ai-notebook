@@ -9,6 +9,7 @@ import { TextInputModal } from './modals/TextInputModal';
 import { MattermostModal } from './modals/MattermostModal';
 import { ImagePreviewModal } from './modals/ImagePreviewModal';
 import { RemoteMarkdownModal } from './modals/RemoteMarkdownModal';
+import { ConfluenceSearchModal } from './modals/ConfluenceSearchModal';
 import { BoundFolderReader } from '../services/BoundFolderReader';
 import { AgentFactory } from '../adapters/AgentFactory';
 import { DebugFolderHelper } from '../utils/debugFolderHelper';
@@ -543,7 +544,32 @@ export class AINotebookDetailView extends ItemView {
         }
 
         // ==========================================
-        // 3. 直接投入ファイル (Direct Inputs)
+        // 3. 外部Wiki (Confluence オンデマンド抽出 & ナレッジ精錬)
+        // ==========================================
+        const confSection = panel.createDiv({ cls: 'ai-notebook-confluence-section' });
+        const confHeader = confSection.createDiv({ cls: 'ai-notebook-panel-header' });
+        confHeader.createEl('h3', { text: '🌐 外部Wiki (Confluence)' });
+
+        const confBody = confSection.createDiv({ cls: 'ai-notebook-confluence-body' });
+        const confExploreBtn = confBody.createEl('button', {
+            cls: 'ai-notebook-btn ai-notebook-btn-primary ai-notebook-btn-xs ai-notebook-btn-block',
+            text: '🔍 Confluenceから探索・抽出 (Extract)'
+        });
+        confExploreBtn.onclick = () => {
+            if (!this.notebookId) return;
+            new ConfluenceSearchModal(
+                this.app,
+                this.plugin,
+                this.notebookId,
+                this.plugin.notebookManager,
+                async () => {
+                    await this.refresh(true);
+                }
+            ).open();
+        };
+
+        // ==========================================
+        // 4. 直接投入ファイル (Direct Inputs)
         // ==========================================
         const sourceSection = panel.createDiv({ cls: 'ai-notebook-source-section' });
         const sourceHeader = sourceSection.createDiv({ cls: 'ai-notebook-panel-header' });
