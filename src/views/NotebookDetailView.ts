@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, setIcon, TFile, Notice, FileSystemAdapter, MarkdownRenderer } from 'obsidian';
+import { ItemView, WorkspaceLeaf, setIcon, TFile, Notice, FileSystemAdapter, MarkdownRenderer, Menu } from 'obsidian';
 import type AINotebookPlugin from '../main';
 import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AgentDebugInfo } from '../types';
 import { ArtifactModal } from './modals/ArtifactModal';
@@ -26,6 +26,11 @@ export class AINotebookDetailView extends ItemView {
     sources: NotebookSource[] = [];
     artifacts: NotebookArtifact[] = [];
     linkedNotebooks: NotebookMetadata[] = [];
+
+    // ソース列の折りたたみ状態
+    isSourcesCollapsed: boolean = false;
+    isLinkedCollapsed: boolean = false;
+    isExternalCollapsed: boolean = false;
     
     // マルチセッション管理
     sessions: ChatSessionMetadata[] = [];
@@ -284,339 +289,175 @@ export class AINotebookDetailView extends ItemView {
     }
 
     /**
-     * コンテキスト & ソースパネルのレンダリング
-     * （🔗 参照ノートブック ＋ 📂 直接投入ファイル）
+     * コンテキスト & ソースパネルのレンダリング（ハイブリッド統合型）
+     * - 統一された [＋ ソースを追加 ▼] ネイティブメニュー
+     * - スリムクイックD&Dバー & 全面ドロップ受け付け
+     * - Progressive Disclosure（設定済みソースのみスマート表示）
+     * - アコーディオン折りたたみ対応カテゴリ
      */
     private renderContextAndSourcePanel(panel: HTMLElement): void {
         panel.empty();
 
-        // ==========================================
-        // 1. 参照ノートブック (Linked Context)
-        // ==========================================
-        const linkedSection = panel.createDiv({ cls: 'ai-notebook-context-section' });
-        const linkedHeader = linkedSection.createDiv({ cls: 'ai-notebook-panel-header' });
-        
-        const linkedTitle = linkedHeader.createEl('h3', { text: '🔗 参照コンテキスト' });
-        linkedTitle.setAttribute('title', '仕様書、フォーマットルール、良質サンプルなどのナレッジノート');
-        linkedHeader.createSpan({ text: `${this.linkedNotebooks.length}`, cls: 'ai-notebook-count-badge' });
-
-        const addLinkBtn = linkedHeader.createEl('button', {
-            cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-xs',
-            text: '+ 参照追加'
-        });
-        addLinkBtn.onclick = () => {
-            if (!this.notebookId || !this.metadata) return;
-            new LinkNotebookModal(
-                this.app,
-                this.plugin.notebookManager,
-                this.notebookId,
-                this.metadata.linkedNotebookIds || [],
-                async (selectedIds) => {
-                    if (!this.notebookId) return;
-                    await this.plugin.notebookManager.updateNotebookMetadata(this.notebookId, {
-                        linkedNotebookIds: selectedIds
-                    });
-                    new Notice('参照コンテキストを更新しました');
-                    await this.refresh(false);
-                }
-            ).open();
-        };
-
-        const linkedList = linkedSection.createDiv({ cls: 'ai-notebook-linked-list' });
-        if (this.linkedNotebooks.length === 0) {
-            const emptyEl = linkedList.createDiv({ cls: 'ai-notebook-empty-linked' });
-            emptyEl.createDiv({ text: '参照中のナレッジノートはありません', cls: 'ai-notebook-empty-text' });
-            const tipEl = emptyEl.createDiv({ text: '「+ 参照追加」から仕様やフォーマットルールを接続できます', cls: 'ai-notebook-hint-text' });
-        } else {
-            for (const nb of this.linkedNotebooks) {
-                const item = linkedList.createDiv({ cls: 'ai-notebook-linked-item' });
-                
-                const icon = item.createSpan({ cls: 'ai-notebook-linked-icon' });
-                setIcon(icon, nb.icon || 'book-open');
-
-                const nameWrap = item.createDiv({ cls: 'ai-notebook-linked-name-wrap' });
-                const nameLink = nameWrap.createSpan({ text: nb.title, cls: 'ai-notebook-linked-name' });
-                nameLink.setAttribute('title', `クリックして「${nb.title}」へジャンプ`);
-                nameLink.onclick = async () => {
-                    await this.setNotebookId(nb.id);
-                };
-
-                const removeBtn = item.createEl('button', { cls: 'ai-notebook-item-delete-btn' });
-                setIcon(removeBtn, 'x');
-                removeBtn.setAttribute('title', '参照リンクを解除');
-                removeBtn.onclick = async (e) => {
-                    e.stopPropagation();
-                    if (!this.notebookId || !this.metadata) return;
-                    const nextIds = (this.metadata.linkedNotebookIds || []).filter(id => id !== nb.id);
-                    await this.plugin.notebookManager.updateNotebookMetadata(this.notebookId, {
-                        linkedNotebookIds: nextIds
-                    });
-                    new Notice(`「${nb.title}」の参照を解除しました`);
-                    await this.refresh(false);
-                };
-            }
-        }
-
-        // ==========================================
-        // 2. バインド外部フォルダ (Bound Folder & AI Discovery)
-        // ==========================================
-        const boundSection = panel.createDiv({ cls: 'ai-notebook-bound-section' });
-        const boundHeader = boundSection.createDiv({ cls: 'ai-notebook-panel-header' });
-        boundHeader.createEl('h3', { text: '🗄️ バインド外部フォルダ' });
-
-        const effectiveBoundPath = this.metadata?.boundFolderPath || this.plugin.settings.sharedFolderBasePath || '';
+        const boundFolderPath = this.metadata?.boundFolderPath || '';
         const isCustomBound = !!this.metadata?.boundFolderPath;
-
-        const configBoundBtn = boundHeader.createEl('button', {
-            cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-xs',
-            text: isCustomBound ? '変更/解除' : 'バインド設定'
-        });
-        configBoundBtn.onclick = () => {
-            if (!this.notebookId) return;
-            new BindFolderModal(
-                this.app,
-                this.plugin.notebookManager,
-                this.notebookId,
-                this.metadata?.boundFolderPath || '',
-                async () => {
-                    await this.refresh(false);
-                }
-            ).open();
-        };
-
-        const boundBody = boundSection.createDiv({ cls: 'ai-notebook-bound-body' });
-        if (effectiveBoundPath) {
-            const pathCard = boundBody.createDiv({ cls: 'ai-notebook-bound-path-card' });
-            const iconSpan = pathCard.createSpan({ cls: 'ai-notebook-bound-icon' });
-            setIcon(iconSpan, 'folder-symlink');
-            
-            const pathText = pathCard.createSpan({ 
-                text: isCustomBound ? effectiveBoundPath : `${effectiveBoundPath} (グローバル設定)`,
-                cls: 'ai-notebook-bound-path'
-            });
-            pathText.setAttribute('title', effectiveBoundPath);
-
-            const exploreBtn = boundBody.createEl('button', {
-                cls: 'ai-notebook-btn ai-notebook-btn-primary ai-notebook-btn-xs ai-notebook-btn-block',
-                text: '📁 フォルダツリーから探索・一括取込 (Extract)'
-            });
-            exploreBtn.onclick = () => {
-                if (!this.notebookId) return;
-                new BoundFolderExplorerModal(
-                    this.app,
-                    this.plugin.notebookManager,
-                    this.notebookId,
-                    effectiveBoundPath,
-                    async () => {
-                        await this.refresh(true);
-                    }
-                ).open();
-            };
-        } else {
-            const emptyBound = boundBody.createDiv({ cls: 'ai-notebook-empty-bound' });
-            emptyBound.createDiv({ text: '外部フォルダは未バインドです', cls: 'ai-notebook-empty-text' });
-            emptyBound.createDiv({ text: '「バインド設定」からファイルサーバー等のパスを登録できます', cls: 'ai-notebook-hint-text' });
-        }
-
-        // ==========================================
-        // 2.5. 💬 Mattermost 連携 (Mattermost Channels)
-        // ==========================================
-        const mmSection = panel.createDiv({ cls: 'ai-notebook-mm-section' });
-        const mmHeader = mmSection.createDiv({ cls: 'ai-notebook-panel-header' });
-        mmHeader.createEl('h3', { text: '💬 Mattermost 連携' });
-
         const boundMmChannels = this.metadata?.boundMmChannels || [];
-        mmHeader.createSpan({ text: `${boundMmChannels.length}`, cls: 'ai-notebook-count-badge' });
-
-        const addMmBtn = mmHeader.createEl('button', {
-            cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-xs',
-            text: '+ チャンネル追加'
-        });
-        addMmBtn.onclick = () => {
-            if (!this.notebookId) return;
-            new MattermostModal(
-                this.app,
-                this.plugin,
-                this.notebookId,
-                'presets',
-                undefined,
-                async () => {
-                    await this.refresh(true);
-                }
-            ).open();
-        };
-
-        const mmBody = mmSection.createDiv({ cls: 'ai-notebook-mm-body' });
-        if (boundMmChannels.length === 0) {
-            const emptyMm = mmBody.createDiv({ cls: 'ai-notebook-empty-mm' });
-            emptyMm.createDiv({ text: 'Mattermost チャンネルは未連携です', cls: 'ai-notebook-empty-text' });
-            emptyMm.createDiv({ text: '「+ チャンネル追加」からお気に入りセットや全チャンネル検索で紐付けできます', cls: 'ai-notebook-hint-text' });
-        } else {
-            for (const ch of boundMmChannels) {
-                const card = mmBody.createDiv({ cls: 'ai-notebook-mm-channel-card' });
-                
-                const cardHeader = card.createDiv({ cls: 'ai-notebook-mm-card-header' });
-                const titleWrap = cardHeader.createDiv({ cls: 'ai-notebook-mm-card-title-wrap' });
-                titleWrap.createSpan({ text: `🏢 [${ch.teamName}]`, cls: 'ai-notebook-badge-team' });
-                titleWrap.createSpan({ text: ` #${ch.displayName || ch.channelName}`, cls: 'ai-notebook-mm-card-title' });
-
-                const deleteBtn = cardHeader.createEl('button', { cls: 'ai-notebook-item-delete-btn' });
-                setIcon(deleteBtn, 'x');
-                deleteBtn.setAttribute('title', 'このノートブックから連携を解除');
-                deleteBtn.onclick = async (e) => {
-                    e.stopPropagation();
-                    if (!this.notebookId) return;
-                    await this.plugin.notebookManager.unbindMattermostChannel(this.notebookId, ch.channelId);
-                    new Notice(`「#${ch.displayName || ch.channelName}」の連携を解除しました`);
-                    await this.refresh(false);
-                };
-
-                // 同期日時
-                const syncInfo = card.createDiv({ cls: 'ai-notebook-mm-sync-info' });
-                const dateStr = ch.lastSyncedAt ? new Date(ch.lastSyncedAt).toLocaleString('ja-JP') : '未同期';
-                syncInfo.createSpan({ text: `最終同期: ${dateStr}`, cls: 'ai-notebook-hint-text' });
-
-                // ボタンアクション行
-                const actionRow = card.createDiv({ cls: 'ai-notebook-mm-card-actions' });
-                
-                const catchUpBtn = actionRow.createEl('button', {
-                    cls: 'ai-notebook-btn ai-notebook-btn-primary ai-notebook-btn-xs',
-                    text: '🔄 最新に追いつく'
-                });
-                catchUpBtn.setAttribute('title', '前回の取得以降の新着投稿・スレッド返信を差分追記します');
-
-                catchUpBtn.onclick = async (e) => {
-                    e.stopPropagation();
-                    if (!this.notebookId) return;
-
-                    catchUpBtn.disabled = true;
-                    catchUpBtn.setText('🔄 取得中...');
-
-                    try {
-                        const sinceTimestamp = ch.lastSyncedAt ? new Date(ch.lastSyncedAt).getTime() : undefined;
-                        const res = await this.plugin.mattermostService.fetchAndFormatPosts(ch, {
-                            perPage: 50,
-                            since: sinceTimestamp,
-                            isCatchUp: true
-                        });
-
-                        if (res.postCount === 0 || !res.markdown) {
-                            new Notice(`「#${ch.displayName || ch.channelName}」に新着メッセージはありません（最新です）`);
-                        } else {
-                            await this.plugin.notebookManager.appendMattermostDiff(
-                                this.notebookId,
-                                ch.channelId,
-                                res.markdown,
-                                res.latestPostId,
-                                res.latestCreateAt
-                            );
-                            new Notice(`「#${ch.displayName || ch.channelName}」から新着 ${res.postCount} 件を取り込みました`);
-                            await this.refresh(true);
-                        }
-                    } catch (err: any) {
-                        new Notice(`追いつき同期エラー: ${err.message || err}`);
-                        console.error('[NotebookDetailView] Catch-up error:', err);
-                    } finally {
-                        catchUpBtn.disabled = false;
-                        catchUpBtn.setText('🔄 最新に追いつく');
-                    }
-                };
-
-                const searchBtn = actionRow.createEl('button', {
-                    cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-xs',
-                    text: '🔎 過去ログ検索'
-                });
-                searchBtn.onclick = (e) => {
-                    e.stopPropagation();
-                    if (!this.notebookId) return;
-                    new MattermostModal(
-                        this.app,
-                        this.plugin,
-                        this.notebookId,
-                        'searchPosts',
-                        ch,
-                        async () => {
-                            await this.refresh(true);
-                        }
-                    ).open();
-                };
-            }
-        }
-
-        // ==========================================
-        // 3. 外部Wiki (Confluence オンデマンド抽出 & ナレッジ精錬)
-        // ==========================================
-        const confSection = panel.createDiv({ cls: 'ai-notebook-confluence-section' });
-        const confHeader = confSection.createDiv({ cls: 'ai-notebook-panel-header' });
-        confHeader.createEl('h3', { text: '🌐 外部Wiki (Confluence)' });
-
-        const confBody = confSection.createDiv({ cls: 'ai-notebook-confluence-body' });
-        const confExploreBtn = confBody.createEl('button', {
-            cls: 'ai-notebook-btn ai-notebook-btn-primary ai-notebook-btn-xs ai-notebook-btn-block',
-            text: '🔍 Confluenceから探索・抽出 (Extract)'
-        });
-        confExploreBtn.onclick = () => {
-            if (!this.notebookId) return;
-            new ConfluenceSearchModal(
-                this.app,
-                this.plugin,
-                this.notebookId,
-                this.plugin.notebookManager,
-                async () => {
-                    await this.refresh(true);
-                }
-            ).open();
-        };
-
-        // ==========================================
-        // 4. 直接投入ファイル (Direct Inputs)
-        // ==========================================
-        const sourceSection = panel.createDiv({ cls: 'ai-notebook-source-section' });
-        const sourceHeader = sourceSection.createDiv({ cls: 'ai-notebook-panel-header' });
+        const hasExternal = !!boundFolderPath || boundMmChannels.length > 0;
         
-        const titleWrap = sourceHeader.createDiv({ cls: 'ai-notebook-source-header-title' });
-        titleWrap.createEl('h3', { text: '📂 直接投入ファイル' });
-        titleWrap.createSpan({ text: `${this.sources.length}`, cls: 'ai-notebook-count-badge' });
+        // 総ソース件数（ファイル + 参照ノート + 外部バインド + MMチャンネル）
+        const totalCount = this.sources.length + this.linkedNotebooks.length + boundMmChannels.length + (boundFolderPath ? 1 : 0);
+
+        // ==========================================
+        // 1. パネルヘッダー（タイトル・総件数・デバッグ動線・統一追加ボタン）
+        // ==========================================
+        const header = panel.createDiv({ cls: 'ai-notebook-panel-header ai-notebook-sources-header' });
+        
+        const titleArea = header.createDiv({ cls: 'ai-notebook-sources-header-title' });
+        titleArea.createEl('h3', { text: '📂 ソース' });
+        titleArea.createSpan({ text: `${totalCount}`, cls: 'ai-notebook-count-badge' });
+
+        const headerActions = header.createDiv({ cls: 'ai-notebook-sources-header-actions' });
 
         // 🛠️ デバッグ動線: sources 実フォルダ (Finder) & 左ペイン表示ボタン (着脱容易)
         if ((this.plugin.settings.enableDebugActions ?? true) && this.notebookId) {
             this.plugin.notebookManager.getSourcesDir(this.notebookId).then(sourcesPath => {
-                DebugFolderHelper.renderHeaderDebugActions(sourceHeader, {
+                DebugFolderHelper.renderHeaderDebugActions(headerActions, {
                     app: this.app,
                     sourcesPath
                 });
             });
         }
 
-        // D&D ドロップゾーン
-        const dropZone = sourceSection.createDiv({ cls: 'ai-notebook-dropzone' });
-        const dropIcon = dropZone.createDiv({ cls: 'ai-notebook-dropzone-icon' });
-        setIcon(dropIcon, 'upload-cloud');
-        dropZone.createDiv({ text: 'ファイルをドロップ または 選択', cls: 'ai-notebook-dropzone-label' });
-
-        // 隠し file input
-        const fileInput = dropZone.createEl('input', { type: 'file' });
+        // 隠し file input（ローカルファイル追加用）
+        const fileInput = panel.createEl('input', { type: 'file' });
         fileInput.multiple = true;
         fileInput.style.display = 'none';
-
-        dropZone.onclick = () => fileInput.click();
-
         fileInput.onchange = async () => {
             if (fileInput.files && fileInput.files.length > 0) {
                 await this.handleFilesAdded(fileInput.files);
             }
         };
 
-        // ドロップゾーンおよびセクション全体での D&D 受け付け
+        // 🌟 統一された [＋ 追加 ▼] ボタン
+        const addBtn = headerActions.createEl('button', {
+            cls: 'ai-notebook-btn ai-notebook-btn-primary ai-notebook-btn-xs ai-notebook-add-source-btn',
+            text: '＋ 追加 ▼'
+        });
+        addBtn.setAttribute('title', 'ファイル、ノート参照、Wiki、チャット等を追加');
+
+        addBtn.onclick = (e: MouseEvent) => {
+            e.stopPropagation();
+            const menu = new Menu();
+
+            menu.addItem(item => {
+                item.setTitle('📄 ローカルファイル (PDF, Office, 画像)')
+                    .setIcon('upload')
+                    .onClick(() => fileInput.click());
+            });
+
+            menu.addItem(item => {
+                item.setTitle('🔗 参照ノートブック (Linked Context)')
+                    .setIcon('link')
+                    .onClick(() => {
+                        if (!this.notebookId || !this.metadata) return;
+                        new LinkNotebookModal(
+                            this.app,
+                            this.plugin.notebookManager,
+                            this.notebookId,
+                            this.metadata.linkedNotebookIds || [],
+                            async (selectedIds) => {
+                                if (!this.notebookId) return;
+                                await this.plugin.notebookManager.updateNotebookMetadata(this.notebookId, {
+                                    linkedNotebookIds: selectedIds
+                                });
+                                new Notice('参照コンテキストを更新しました');
+                                await this.refresh(false);
+                            }
+                        ).open();
+                    });
+            });
+
+            menu.addSeparator();
+
+            menu.addItem(item => {
+                item.setTitle('🌐 Confluence Wiki から探索・抽出')
+                    .setIcon('globe')
+                    .onClick(() => {
+                        if (!this.notebookId) return;
+                        new ConfluenceSearchModal(
+                            this.app,
+                            this.plugin,
+                            this.notebookId,
+                            this.plugin.notebookManager,
+                            async () => {
+                                await this.refresh(true);
+                            }
+                        ).open();
+                    });
+            });
+
+            menu.addItem(item => {
+                item.setTitle('🗄️ 外部フォルダをバインド・探索')
+                    .setIcon('folder-symlink')
+                    .onClick(() => {
+                        if (!this.notebookId) return;
+                        new BindFolderModal(
+                            this.app,
+                            this.plugin.notebookManager,
+                            this.notebookId,
+                            this.metadata?.boundFolderPath || '',
+                            async () => {
+                                await this.refresh(false);
+                            }
+                        ).open();
+                    });
+            });
+
+            menu.addItem(item => {
+                item.setTitle('💬 Mattermost チャンネルを連携')
+                    .setIcon('message-square')
+                    .onClick(() => {
+                        if (!this.notebookId) return;
+                        new MattermostModal(
+                            this.app,
+                            this.plugin,
+                            this.notebookId,
+                            'presets',
+                            undefined,
+                            async () => {
+                                await this.refresh(true);
+                            }
+                        ).open();
+                    });
+            });
+
+            const rect = addBtn.getBoundingClientRect();
+            menu.showAtPosition({ x: rect.left, y: rect.bottom + 4 });
+        };
+
+        // ==========================================
+        // 2. パネルスクロールコンテンツエリア
+        // ==========================================
+        const contentArea = panel.createDiv({ cls: 'ai-notebook-sources-content-area' });
+
+        // スリムクイック D&D バー
+        const slimDrop = contentArea.createDiv({ cls: 'ai-notebook-slim-dropzone' });
+        const slimDropIcon = slimDrop.createSpan({ cls: 'ai-notebook-slim-dropzone-icon' });
+        setIcon(slimDropIcon, 'upload-cloud');
+        slimDrop.createSpan({ text: 'ファイルをドロップ または 選択', cls: 'ai-notebook-slim-dropzone-label' });
+        slimDrop.onclick = () => fileInput.click();
+
+        // D&D イベントハンドラー（スリムバー ＆ パネル全体）
         const handleDragOver = (e: DragEvent) => {
             e.preventDefault();
             e.stopPropagation();
-            dropZone.addClass('is-dragover');
+            slimDrop.addClass('is-dragover');
+            panel.addClass('is-panel-dragover');
         };
         const handleDragLeave = (e: DragEvent) => {
             e.preventDefault();
             e.stopPropagation();
-            dropZone.removeClass('is-dragover');
+            slimDrop.removeClass('is-dragover');
+            panel.removeClass('is-panel-dragover');
         };
         const handleDrop = async (e: DragEvent) => {
             e.preventDefault();
@@ -624,151 +465,398 @@ export class AINotebookDetailView extends ItemView {
             if (e.stopImmediatePropagation) {
                 e.stopImmediatePropagation();
             }
-            dropZone.removeClass('is-dragover');
+            slimDrop.removeClass('is-dragover');
+            panel.removeClass('is-panel-dragover');
             if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
                 await this.handleFilesAdded(e.dataTransfer.files);
             }
         };
 
-        dropZone.ondragover = handleDragOver;
-        dropZone.ondragleave = handleDragLeave;
-        dropZone.ondrop = handleDrop;
+        slimDrop.ondragover = handleDragOver;
+        slimDrop.ondragleave = handleDragLeave;
+        slimDrop.ondrop = handleDrop;
 
-        sourceSection.ondragover = handleDragOver;
-        sourceSection.ondragleave = handleDragLeave;
-        sourceSection.ondrop = handleDrop;
+        contentArea.ondragover = handleDragOver;
+        contentArea.ondragleave = handleDragLeave;
+        contentArea.ondrop = handleDrop;
 
-        // ソース一覧リスト
-        const sourceList = sourceSection.createDiv({ cls: 'ai-notebook-source-list' });
-        if (this.sources.length === 0) {
-            sourceList.createDiv({ text: '直接投入ファイルはありません', cls: 'ai-notebook-empty-text' });
-        } else {
-            for (const src of this.sources) {
-                const item = sourceList.createDiv({ cls: 'ai-notebook-source-item is-clickable' });
-                
-                const effectiveExt = (src.convertedFrom
-                    ? src.convertedFrom.split('.').pop() || src.extension
-                    : src.extension).toLowerCase();
-                const isImageSource = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(effectiveExt)
-                    || /\.(png|jpg|jpeg|webp|gif|bmp)(\.md)?$/i.test(src.name);
+        panel.ondragover = handleDragOver;
+        panel.ondragleave = handleDragLeave;
+        panel.ondrop = handleDrop;
 
-                // アイテムクリック: 画像ならプレビューモーダル、リモートならRemoteMarkdownModal、文書ならエディタで開く
-                item.onclick = async () => {
-                    if (isImageSource) {
-                        new ImagePreviewModal(this.app, this.plugin, src).open();
-                    } else if (this.metadata?.isRemote) {
-                        new RemoteMarkdownModal(
-                            this.app,
-                            this.plugin.notebookManager,
-                            this.notebookId!,
-                            src.name,
-                            src.path,
-                            async () => {
-                                const forked = await this.plugin.notebookManager.forkNotebook(this.notebookId!);
-                                await this.setNotebookId(forked.id);
+        // ==========================================
+        // 3. 空状態（初見・新規作成時）
+        // ==========================================
+        if (totalCount === 0) {
+            const emptyGuide = contentArea.createDiv({ cls: 'ai-notebook-sources-empty-guide' });
+            const emptyIcon = emptyGuide.createDiv({ cls: 'ai-notebook-sources-empty-icon' });
+            setIcon(emptyIcon, 'inbox');
+            emptyGuide.createDiv({ text: 'ソースがまだありません', cls: 'ai-notebook-sources-empty-title' });
+            emptyGuide.createDiv({ 
+                text: '上の「＋ 追加」またはファイルをドロップして、AIと対話を開始しましょう', 
+                cls: 'ai-notebook-sources-empty-desc' 
+            });
+            return;
+        }
+
+        // ==========================================
+        // 4. カテゴリ 1: 📄 直接投入ファイル
+        // ==========================================
+        if (this.sources.length > 0) {
+            const catSection = contentArea.createDiv({ cls: 'ai-notebook-source-cat-section' });
+            
+            // アコーディオンヘッダー
+            const catHeader = catSection.createDiv({ cls: 'ai-notebook-source-cat-header' });
+            const chevron = catHeader.createSpan({ cls: 'ai-notebook-source-cat-chevron' });
+            setIcon(chevron, this.isSourcesCollapsed ? 'chevron-right' : 'chevron-down');
+            
+            const catTitleWrap = catHeader.createDiv({ cls: 'ai-notebook-source-cat-title-wrap' });
+            catTitleWrap.createSpan({ text: '📄 ファイル', cls: 'ai-notebook-source-cat-title' });
+            catTitleWrap.createSpan({ text: `${this.sources.length}`, cls: 'ai-notebook-count-badge' });
+
+            catHeader.onclick = () => {
+                this.isSourcesCollapsed = !this.isSourcesCollapsed;
+                this.renderContextAndSourcePanel(panel);
+            };
+
+            if (!this.isSourcesCollapsed) {
+                const list = catSection.createDiv({ cls: 'ai-notebook-source-list' });
+                for (const src of this.sources) {
+                    const item = list.createDiv({ cls: 'ai-notebook-source-item is-clickable' });
+                    
+                    const effectiveExt = (src.convertedFrom
+                        ? src.convertedFrom.split('.').pop() || src.extension
+                        : src.extension).toLowerCase();
+                    const isImageSource = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(effectiveExt)
+                        || /\.(png|jpg|jpeg|webp|gif|bmp)(\.md)?$/i.test(src.name);
+
+                    // アイテムクリック: 画像ならプレビューモーダル、リモートならRemoteMarkdownModal、文書ならエディタで開く
+                    item.onclick = async () => {
+                        if (isImageSource) {
+                            new ImagePreviewModal(this.app, this.plugin, src).open();
+                        } else if (this.metadata?.isRemote) {
+                            new RemoteMarkdownModal(
+                                this.app,
+                                this.plugin.notebookManager,
+                                this.notebookId!,
+                                src.name,
+                                src.path,
+                                async () => {
+                                    const forked = await this.plugin.notebookManager.forkNotebook(this.notebookId!);
+                                    await this.setNotebookId(forked.id);
+                                }
+                            ).open();
+                        } else {
+                            await DebugFolderHelper.openInEditor(this.app, src.path);
+                        }
+                    };
+                    item.setAttribute('title', isImageSource ? `クリックで画像プレビューを表示: ${src.name}` : `クリックで内容をプレビュー: ${src.path}`);
+
+                    const iconSpan = item.createSpan({ cls: 'ai-notebook-source-icon' });
+                    setIcon(iconSpan, this.getFileIcon(effectiveExt));
+
+                    const nameWrap = item.createDiv({ cls: 'ai-notebook-source-name-wrap' });
+                    const nameSpan = nameWrap.createSpan({ text: src.name, cls: 'ai-notebook-source-name' });
+                    nameSpan.setAttribute('title', src.name);
+
+                    // 出典元フォルダのバッジ表示 (例: 📁 2024/A社_基幹刷新)
+                    if (src.origin?.relativeFolder) {
+                        const folderBadge = nameWrap.createSpan({ cls: 'ai-notebook-badge-origin-folder' });
+                        folderBadge.setText(`📁 ${src.origin.relativeFolder}`);
+                        folderBadge.setAttribute('title', `出典フォルダ: ${src.origin.relativeFolder}`);
+                    }
+
+                    if (src.convertedFrom) {
+                        const badge = nameWrap.createSpan({ cls: 'ai-notebook-badge-converted' });
+                        const origExt = (src.convertedFrom.split('.').pop() || '').toLowerCase();
+                        if (origExt === 'xlsx' || origExt === 'xls' || origExt === 'xlsm') {
+                            badge.setText('📊 Excel変換');
+                        } else if (origExt === 'pptx' || origExt === 'ppt') {
+                            badge.setText('📑 PPTX変換');
+                        } else if (origExt === 'docx' || origExt === 'doc') {
+                            badge.setText('📄 Word変換');
+                        } else if (origExt === 'pdf') {
+                            badge.setText('📕 PDF変換');
+                        } else if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(origExt)) {
+                            badge.setText('🖼️ 画像ノート');
+                        } else {
+                            badge.setText('変換済');
+                        }
+                    }
+
+                    // 🦊 GitLab Uploads オフロードバッジ表示
+                    if (src.origin?.connectorId === 'gitlab_upload' && src.origin.remoteUrl) {
+                        const gitlabBadge = nameWrap.createSpan({ cls: 'ai-notebook-badge-gitlab' });
+                        gitlabBadge.setText('🦊 GitLab原本');
+                        gitlabBadge.setAttribute('title', `GitLab Uploads に保存済み (Vault消費0バイト)\nURL: ${src.origin.remoteUrl}\nクリックでブラウザで開く`);
+                        gitlabBadge.onclick = (e) => {
+                            e.stopPropagation();
+                            window.open(src.origin!.remoteUrl, '_blank');
+                        };
+                    }
+
+                    // 変換エラー時の警告バッジ表示
+                    if (src.transcriptionError) {
+                        const errorBadge = nameWrap.createSpan({ cls: 'ai-notebook-badge-error' });
+                        errorBadge.setText('⚠️ 変換失敗');
+                        const errDetail = src.transcriptionError.errorMessage || '不明なエラー';
+                        errorBadge.setAttribute('title', `変換エラー: ${errDetail}\n(クリックでエラー詳細を表示)`);
+                        errorBadge.onclick = (e) => {
+                            e.stopPropagation();
+                            new Notice(`【変換エラー詳細: ${src.name}】\n${errDetail}\nサイズ: ${src.transcriptionError?.fileSize} bytes`, 10000);
+                        };
+                    }
+
+                    // 🛠️ デバッグ動線: 各ファイル用のFinder/左ペイン/詳細情報ボタン (着脱容易)
+                    if ((this.plugin.settings.enableDebugActions ?? true) && this.notebookId) {
+                        DebugFolderHelper.renderItemDebugActions(item, {
+                            app: this.app,
+                            source: src,
+                            notebookId: this.notebookId,
+                            rootDir: this.plugin.settings.rootDir
+                        });
+                    }
+
+                    // 未変換のバイナリまたはエラー発生ソースに対する再変換（リラン）ボタン
+                    const isTranscribableRaw = ['xlsx', 'xls', 'xlsm', 'docx', 'pptx'].includes(src.extension.toLowerCase()) && !src.convertedFrom;
+                    if (isTranscribableRaw || src.transcriptionError) {
+                        const retryBtn = item.createEl('button', { cls: 'ai-notebook-item-retry-btn' });
+                        setIcon(retryBtn, 'refresh-cw');
+                        retryBtn.setAttribute('title', 'Markdownへ再変換を実行');
+                        retryBtn.onclick = async (e) => {
+                            e.stopPropagation();
+                            if (!this.notebookId) return;
+                            retryBtn.addClass('is-loading');
+                            new Notice(`${src.name} の再変換を実行中...`);
+                            const result = await this.plugin.notebookManager.retranscribeSource(this.notebookId, src.name);
+                            if (result.success) {
+                                new Notice(`✅ ${src.name} を Markdown に変換しました`);
+                            } else {
+                                new Notice(`❌ 再変換に失敗しました: ${result.error}`, 8000);
                             }
-                        ).open();
-                    } else {
-                        await DebugFolderHelper.openInEditor(this.app, src.path);
+                            await this.refresh();
+                        };
                     }
-                };
-                item.setAttribute('title', isImageSource ? `クリックで画像プレビューを表示: ${src.name}` : `クリックで内容をプレビュー: ${src.path}`);
 
-                const iconSpan = item.createSpan({ cls: 'ai-notebook-source-icon' });
-                setIcon(iconSpan, this.getFileIcon(effectiveExt));
-
-                const nameWrap = item.createDiv({ cls: 'ai-notebook-source-name-wrap' });
-                const nameSpan = nameWrap.createSpan({ text: src.name, cls: 'ai-notebook-source-name' });
-                nameSpan.setAttribute('title', src.name);
-
-                // 出典元フォルダのバッジ表示 (例: 📁 2024/A社_基幹刷新)
-                if (src.origin?.relativeFolder) {
-                    const folderBadge = nameWrap.createSpan({ cls: 'ai-notebook-badge-origin-folder' });
-                    folderBadge.setText(`📁 ${src.origin.relativeFolder}`);
-                    folderBadge.setAttribute('title', `出典フォルダ: ${src.origin.relativeFolder}`);
-                }
-
-                if (src.convertedFrom) {
-                    const badge = nameWrap.createSpan({ cls: 'ai-notebook-badge-converted' });
-                    const origExt = (src.convertedFrom.split('.').pop() || '').toLowerCase();
-                    if (origExt === 'xlsx' || origExt === 'xls' || origExt === 'xlsm') {
-                        badge.setText('📊 Excel変換');
-                    } else if (origExt === 'pptx' || origExt === 'ppt') {
-                        badge.setText('📑 PPTX変換');
-                    } else if (origExt === 'docx' || origExt === 'doc') {
-                        badge.setText('📄 Word変換');
-                    } else if (origExt === 'pdf') {
-                        badge.setText('📕 PDF変換');
-                    } else if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(origExt)) {
-                        badge.setText('🖼️ 画像ノート');
-                    } else {
-                        badge.setText('変換済');
-                    }
-                }
-
-                // 🦊 GitLab Uploads オフロードバッジ表示
-                if (src.origin?.connectorId === 'gitlab_upload' && src.origin.remoteUrl) {
-                    const gitlabBadge = nameWrap.createSpan({ cls: 'ai-notebook-badge-gitlab' });
-                    gitlabBadge.setText('🦊 GitLab原本');
-                    gitlabBadge.setAttribute('title', `GitLab Uploads に保存済み (Vault消費0バイト)\nURL: ${src.origin.remoteUrl}\nクリックでブラウザで開く`);
-                    gitlabBadge.onclick = (e) => {
-                        e.stopPropagation();
-                        window.open(src.origin!.remoteUrl, '_blank');
-                    };
-                }
-
-                // 変換エラー時の警告バッジ表示
-                if (src.transcriptionError) {
-                    const errorBadge = nameWrap.createSpan({ cls: 'ai-notebook-badge-error' });
-                    errorBadge.setText('⚠️ 変換失敗');
-                    const errDetail = src.transcriptionError.errorMessage || '不明なエラー';
-                    errorBadge.setAttribute('title', `変換エラー: ${errDetail}\n(クリックでエラー詳細を表示)`);
-                    errorBadge.onclick = (e) => {
-                        e.stopPropagation();
-                        new Notice(`【変換エラー詳細: ${src.name}】\n${errDetail}\nサイズ: ${src.transcriptionError?.fileSize} bytes`, 10000);
-                    };
-                }
-
-                // 🛠️ デバッグ動線: 各ファイル用のFinder/左ペイン/詳細情報ボタン (着脱容易)
-                if ((this.plugin.settings.enableDebugActions ?? true) && this.notebookId) {
-                    DebugFolderHelper.renderItemDebugActions(item, {
-                        app: this.app,
-                        source: src,
-                        notebookId: this.notebookId,
-                        rootDir: this.plugin.settings.rootDir
-                    });
-                }
-
-                // 未変換のバイナリまたはエラー発生ソースに対する再変換（リラン）ボタン
-                const isTranscribableRaw = ['xlsx', 'xls', 'xlsm', 'docx', 'pptx'].includes(src.extension.toLowerCase()) && !src.convertedFrom;
-                if (isTranscribableRaw || src.transcriptionError) {
-                    const retryBtn = item.createEl('button', { cls: 'ai-notebook-item-retry-btn' });
-                    setIcon(retryBtn, 'refresh-cw');
-                    retryBtn.setAttribute('title', 'Markdownへ再変換を実行');
-                    retryBtn.onclick = async (e) => {
+                    const deleteBtn = item.createEl('button', { cls: 'ai-notebook-item-delete-btn' });
+                    setIcon(deleteBtn, 'x');
+                    deleteBtn.setAttribute('title', '削除');
+                    deleteBtn.onclick = async (e) => {
                         e.stopPropagation();
                         if (!this.notebookId) return;
-                        retryBtn.addClass('is-loading');
-                        new Notice(`${src.name} の再変換を実行中...`);
-                        const result = await this.plugin.notebookManager.retranscribeSource(this.notebookId, src.name);
-                        if (result.success) {
-                            new Notice(`✅ ${src.name} を Markdown に変換しました`);
-                        } else {
-                            new Notice(`❌ 再変換に失敗しました: ${result.error}`, 8000);
-                        }
+                        await this.plugin.notebookManager.deleteSourceFile(this.notebookId, src.name);
                         await this.refresh();
                     };
                 }
+            }
+        }
 
-                const deleteBtn = item.createEl('button', { cls: 'ai-notebook-item-delete-btn' });
-                setIcon(deleteBtn, 'x');
-                deleteBtn.setAttribute('title', '削除');
-                deleteBtn.onclick = async (e) => {
-                    e.stopPropagation();
-                    if (!this.notebookId) return;
-                    await this.plugin.notebookManager.deleteSourceFile(this.notebookId, src.name);
-                    await this.refresh();
-                };
+        // ==========================================
+        // 5. カテゴリ 2: 🔗 参照コンテキスト (Linked Notebooks)
+        // ==========================================
+        if (this.linkedNotebooks.length > 0) {
+            const catSection = contentArea.createDiv({ cls: 'ai-notebook-source-cat-section' });
+            
+            const catHeader = catSection.createDiv({ cls: 'ai-notebook-source-cat-header' });
+            const chevron = catHeader.createSpan({ cls: 'ai-notebook-source-cat-chevron' });
+            setIcon(chevron, this.isLinkedCollapsed ? 'chevron-right' : 'chevron-down');
+
+            const catTitleWrap = catHeader.createDiv({ cls: 'ai-notebook-source-cat-title-wrap' });
+            catTitleWrap.createSpan({ text: '🔗 参照ノート', cls: 'ai-notebook-source-cat-title' });
+            catTitleWrap.createSpan({ text: `${this.linkedNotebooks.length}`, cls: 'ai-notebook-count-badge' });
+
+            catHeader.onclick = () => {
+                this.isLinkedCollapsed = !this.isLinkedCollapsed;
+                this.renderContextAndSourcePanel(panel);
+            };
+
+            if (!this.isLinkedCollapsed) {
+                const list = catSection.createDiv({ cls: 'ai-notebook-linked-list' });
+                for (const nb of this.linkedNotebooks) {
+                    const item = list.createDiv({ cls: 'ai-notebook-linked-item' });
+                    
+                    const icon = item.createSpan({ cls: 'ai-notebook-linked-icon' });
+                    setIcon(icon, nb.icon || 'book-open');
+
+                    const nameWrap = item.createDiv({ cls: 'ai-notebook-linked-name-wrap' });
+                    const nameLink = nameWrap.createSpan({ text: nb.title, cls: 'ai-notebook-linked-name' });
+                    nameLink.setAttribute('title', `クリックして「${nb.title}」へジャンプ`);
+                    nameLink.onclick = async () => {
+                        await this.setNotebookId(nb.id);
+                    };
+
+                    const removeBtn = item.createEl('button', { cls: 'ai-notebook-item-delete-btn' });
+                    setIcon(removeBtn, 'x');
+                    removeBtn.setAttribute('title', '参照リンクを解除');
+                    removeBtn.onclick = async (e) => {
+                        e.stopPropagation();
+                        if (!this.notebookId || !this.metadata) return;
+                        const nextIds = (this.metadata.linkedNotebookIds || []).filter(id => id !== nb.id);
+                        await this.plugin.notebookManager.updateNotebookMetadata(this.notebookId, {
+                            linkedNotebookIds: nextIds
+                        });
+                        new Notice(`「${nb.title}」の参照を解除しました`);
+                        await this.refresh(false);
+                    };
+                }
+            }
+        }
+
+        // ==========================================
+        // 6. カテゴリ 3: ⚡ 外部連携中 (Bound Folder & Mattermost)
+        //    ※ 設定済みのものだけ出現！
+        // ==========================================
+        if (hasExternal) {
+            const externalCount = (boundFolderPath ? 1 : 0) + boundMmChannels.length;
+            const catSection = contentArea.createDiv({ cls: 'ai-notebook-source-cat-section' });
+
+            const catHeader = catSection.createDiv({ cls: 'ai-notebook-source-cat-header' });
+            const chevron = catHeader.createSpan({ cls: 'ai-notebook-source-cat-chevron' });
+            setIcon(chevron, this.isExternalCollapsed ? 'chevron-right' : 'chevron-down');
+
+            const catTitleWrap = catHeader.createDiv({ cls: 'ai-notebook-source-cat-title-wrap' });
+            catTitleWrap.createSpan({ text: '⚡ 外部連携中', cls: 'ai-notebook-source-cat-title' });
+            catTitleWrap.createSpan({ text: `${externalCount}`, cls: 'ai-notebook-count-badge' });
+
+            catHeader.onclick = () => {
+                this.isExternalCollapsed = !this.isExternalCollapsed;
+                this.renderContextAndSourcePanel(panel);
+            };
+
+            if (!this.isExternalCollapsed) {
+                const extBody = catSection.createDiv({ cls: 'ai-notebook-external-list' });
+
+                // 🗄️ バインド外部フォルダ
+                if (boundFolderPath) {
+                    const card = extBody.createDiv({ cls: 'ai-notebook-ext-card' });
+                    const cardHeader = card.createDiv({ cls: 'ai-notebook-ext-card-header' });
+                    
+                    const titleWrap = cardHeader.createDiv({ cls: 'ai-notebook-ext-card-title-wrap' });
+                    const iconSpan = titleWrap.createSpan({ cls: 'ai-notebook-ext-card-icon' });
+                    setIcon(iconSpan, 'folder-symlink');
+                    const pathText = titleWrap.createSpan({ 
+                        text: isCustomBound ? path.basename(boundFolderPath) || boundFolderPath : `${path.basename(boundFolderPath)} (共通)`,
+                        cls: 'ai-notebook-ext-card-title'
+                    });
+                    pathText.setAttribute('title', boundFolderPath);
+
+                    const deleteBtn = cardHeader.createEl('button', { cls: 'ai-notebook-item-delete-btn' });
+                    setIcon(deleteBtn, 'x');
+                    deleteBtn.setAttribute('title', 'バインドを解除');
+                    deleteBtn.onclick = async (e) => {
+                        e.stopPropagation();
+                        if (!this.notebookId) return;
+                        await this.plugin.notebookManager.updateNotebookMetadata(this.notebookId, {
+                            boundFolderPath: ''
+                        });
+                        new Notice('外部フォルダのバインドを解除しました');
+                        await this.refresh(false);
+                    };
+
+                    const exploreBtn = card.createEl('button', {
+                        cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-xs ai-notebook-btn-block',
+                        text: '📁 フォルダツリーから探索・取込'
+                    });
+                    exploreBtn.onclick = () => {
+                        if (!this.notebookId) return;
+                        new BoundFolderExplorerModal(
+                            this.app,
+                            this.plugin.notebookManager,
+                            this.notebookId,
+                            boundFolderPath,
+                            async () => {
+                                await this.refresh(true);
+                            }
+                        ).open();
+                    };
+                }
+
+                // 💬 Mattermost チャンネル
+                for (const ch of boundMmChannels) {
+                    const card = extBody.createDiv({ cls: 'ai-notebook-ext-card ai-notebook-mm-card' });
+                    
+                    const cardHeader = card.createDiv({ cls: 'ai-notebook-ext-card-header' });
+                    const titleWrap = cardHeader.createDiv({ cls: 'ai-notebook-ext-card-title-wrap' });
+                    const iconSpan = titleWrap.createSpan({ cls: 'ai-notebook-ext-card-icon' });
+                    setIcon(iconSpan, 'message-square');
+                    titleWrap.createSpan({ text: `[${ch.teamName}] #${ch.displayName || ch.channelName}`, cls: 'ai-notebook-ext-card-title' });
+
+                    const deleteBtn = cardHeader.createEl('button', { cls: 'ai-notebook-item-delete-btn' });
+                    setIcon(deleteBtn, 'x');
+                    deleteBtn.setAttribute('title', 'このチャンネルの連携を解除');
+                    deleteBtn.onclick = async (e) => {
+                        e.stopPropagation();
+                        if (!this.notebookId) return;
+                        await this.plugin.notebookManager.unbindMattermostChannel(this.notebookId, ch.channelId);
+                        new Notice(`「#${ch.displayName || ch.channelName}」の連携を解除しました`);
+                        await this.refresh(false);
+                    };
+
+                    const syncInfo = card.createDiv({ cls: 'ai-notebook-mm-sync-info' });
+                    const dateStr = ch.lastSyncedAt ? new Date(ch.lastSyncedAt).toLocaleString('ja-JP') : '未同期';
+                    syncInfo.createSpan({ text: `最終同期: ${dateStr}`, cls: 'ai-notebook-hint-text' });
+
+                    const actionRow = card.createDiv({ cls: 'ai-notebook-mm-card-actions' });
+                    const catchUpBtn = actionRow.createEl('button', {
+                        cls: 'ai-notebook-btn ai-notebook-btn-primary ai-notebook-btn-xs',
+                        text: '🔄 追いつく'
+                    });
+                    catchUpBtn.setAttribute('title', '前回の取得以降の新着投稿・返信を差分追記します');
+
+                    catchUpBtn.onclick = async (e) => {
+                        e.stopPropagation();
+                        if (!this.notebookId) return;
+                        catchUpBtn.disabled = true;
+                        catchUpBtn.setText('🔄 取得中...');
+                        try {
+                            const sinceTimestamp = ch.lastSyncedAt ? new Date(ch.lastSyncedAt).getTime() : undefined;
+                            const res = await this.plugin.mattermostService.fetchAndFormatPosts(ch, {
+                                perPage: 50,
+                                since: sinceTimestamp,
+                                isCatchUp: true
+                            });
+
+                            if (res.postCount === 0 || !res.markdown) {
+                                new Notice(`「#${ch.displayName || ch.channelName}」に新着メッセージはありません（最新です）`);
+                            } else {
+                                await this.plugin.notebookManager.appendMattermostDiff(
+                                    this.notebookId,
+                                    ch.channelId,
+                                    res.markdown,
+                                    res.latestPostId,
+                                    res.latestCreateAt
+                                );
+                                new Notice(`「#${ch.displayName || ch.channelName}」から新着 ${res.postCount} 件を取り込みました`);
+                                await this.refresh(true);
+                            }
+                        } catch (err: any) {
+                            new Notice(`追いつき同期エラー: ${err.message || err}`);
+                            console.error('[NotebookDetailView] Catch-up error:', err);
+                        } finally {
+                            catchUpBtn.disabled = false;
+                            catchUpBtn.setText('🔄 追いつく');
+                        }
+                    };
+
+                    const searchBtn = actionRow.createEl('button', {
+                        cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-xs',
+                        text: '🔎 検索'
+                    });
+                    searchBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        if (!this.notebookId) return;
+                        new MattermostModal(
+                            this.app,
+                            this.plugin,
+                            this.notebookId,
+                            'searchPosts',
+                            ch,
+                            async () => {
+                                await this.refresh(true);
+                            }
+                        ).open();
+                    };
+                }
             }
         }
     }
