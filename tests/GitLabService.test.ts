@@ -3,6 +3,7 @@ import {
     normalizeGitLabBaseUrl,
     encodeProjectId,
     getGitLabHostUrl,
+    convertToApiUploadUrl,
     GitLabService
 } from '../src/services/GitLabService';
 import { GitLabServerConfig, DEFAULT_SETTINGS, AINotebookSettings } from '../src/types';
@@ -84,6 +85,30 @@ assert.strictEqual(gitlabService.isGitLabUploadUrl(testOtherUrl), false, '一般
 const resolvedServer = gitlabService.getServerForUrl(testCorpUploadUrl);
 assert.strictEqual(resolvedServer?.id, 'corp-gitlab', '社内URLから適切なサーバーが解決されること');
 console.log('  -> OK: GitLab Upload URL 判定正常');
+
+// 3c. Web UI URL から API エンドポイント URL への変換
+console.log('Test 3c: convertToApiUploadUrl');
+assert.strictEqual(
+    convertToApiUploadUrl('https://gitlab.com/-/project/86381868/uploads/502e4426ddedc6b4720279a790702cf6/image.webp'),
+    'https://gitlab.com/api/v4/projects/86381868/uploads/502e4426ddedc6b4720279a790702cf6/image.webp',
+    '/-/project/:id/uploads 形式が API URL に変換されること'
+);
+assert.strictEqual(
+    convertToApiUploadUrl('https://gitlab.company.internal/mygroup/myproject/uploads/abc/image.png'),
+    'https://gitlab.company.internal/api/v4/projects/mygroup%2Fmyproject/uploads/abc/image.png',
+    'グループ・プロジェクト名空間形式が API URL に変換されること'
+);
+assert.strictEqual(
+    convertToApiUploadUrl('/uploads/abc/image.webp', server1),
+    'https://gitlab.company.internal/api/v4/projects/knowledge%2Fuploads/uploads/abc/image.webp',
+    '相対パスが fallbackServer から API URL に変換されること'
+);
+assert.strictEqual(
+    convertToApiUploadUrl('https://gitlab.com/api/v4/projects/86381868/uploads/abc/image.webp'),
+    'https://gitlab.com/api/v4/projects/86381868/uploads/abc/image.webp',
+    'すでに API URL の場合はそのまま維持されること'
+);
+console.log('  -> OK: convertToApiUploadUrl 正常');
 
 // 4. バリデーション
 console.log('Test 4: プロジェクトID未設定時のアップロードバリデーション');

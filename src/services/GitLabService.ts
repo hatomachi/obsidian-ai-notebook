@@ -60,6 +60,58 @@ export function getGitLabHostUrl(rawUrl: string): string {
     return url.replace(/\/+$/, '');
 }
 
+/**
+ * GitLab Uploads の Web UI 用 URL を PAT 認証可能な API エンドポイント URL に変換
+ * 
+ * 例:
+ * - "https://gitlab.com/-/project/86381868/uploads/secret/image.webp"
+ *   -> "https://gitlab.com/api/v4/projects/86381868/uploads/secret/image.webp"
+ * - "https://gitlab.company.internal/group/project/uploads/secret/image.png"
+ *   -> "https://gitlab.company.internal/api/v4/projects/group%2Fproject/uploads/secret/image.png"
+ * - "/uploads/secret/image.webp" (fallbackServer あり)
+ *   -> "https://gitlab.com/api/v4/projects/86381868/uploads/secret/image.webp"
+ */
+export function convertToApiUploadUrl(
+    url: string,
+    fallbackServer?: GitLabServerConfig
+): string {
+    const trimmed = (url || '').trim();
+    if (!trimmed) return '';
+
+    // すでに API エンドポイント形式の場合はそのまま
+    if (trimmed.includes('/api/v4/projects/') && trimmed.includes('/uploads/')) {
+        return trimmed;
+    }
+
+    // パターン1: /-/project/:projectId/uploads/:secret/:filename
+    const projectMatch = trimmed.match(/^(https?:\/\/[^\/]+)\/-\/project\/([^\/]+)\/uploads\/(.+)$/i);
+    if (projectMatch) {
+        const [, host, projectId, rest] = projectMatch;
+        return `${host}/api/v4/projects/${encodeProjectId(projectId)}/uploads/${rest}`;
+    }
+
+    // パターン2: http(s)://host/group/project/uploads/:secret/:filename
+    const namespaceMatch = trimmed.match(/^(https?:\/\/[^\/]+)\/(.+?)\/uploads\/(.+)$/i);
+    if (namespaceMatch) {
+        const [, host, namespace, rest] = namespaceMatch;
+        if (!namespace.startsWith('api/') && !namespace.startsWith('-/')) {
+            return `${host}/api/v4/projects/${encodeProjectId(namespace)}/uploads/${rest}`;
+        }
+    }
+
+    // パターン3: 相対パス /uploads/:secret/:filename
+    if (fallbackServer && (trimmed.startsWith('/uploads/') || trimmed.startsWith('uploads/'))) {
+        const hostUrl = getGitLabHostUrl(fallbackServer.baseUrl);
+        const projectId = fallbackServer.defaultProjectId ? encodeProjectId(fallbackServer.defaultProjectId) : '';
+        const cleanPath = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+        if (hostUrl && projectId) {
+            return `${hostUrl}/api/v4/projects/${projectId}${cleanPath}`;
+        }
+    }
+
+    return trimmed;
+}
+
 export class GitLabService {
     private settings: AINotebookSettings;
     private imageBlobUrlCache = new Map<string, string>();
@@ -324,13 +376,16 @@ export class GitLabService {
             targetUrl = `${hostUrl}${targetUrl.startsWith('/') ? targetUrl : '/' + targetUrl}`;
         }
 
+        // Web UI 用 URL から PAT 認証可能な API エンドポイント URL に自動変換
+        const apiUrl = convertToApiUploadUrl(targetUrl, server);
+
         const headers: Record<string, string> = {};
         if (server?.token) {
             headers['PRIVATE-TOKEN'] = server.token.trim();
         }
 
         const res = await requestUrl({
-            url: targetUrl,
+            url: apiUrl,
             method: 'GET',
             headers,
             throw: false
@@ -402,6 +457,9 @@ export class GitLabService {
         }
 
         const server = this.getServerForUrl(trimmedUrl);
+        // Web UI 用 URL から PAT 認証可能な API エンドポイント URL に自動変換
+        const apiUrl = convertToApiUploadUrl(trimmedUrl, server);
+
         const headers: Record<string, string> = {};
         if (server?.token) {
             headers['PRIVATE-TOKEN'] = server.token.trim();
@@ -410,13 +468,13 @@ export class GitLabService {
         let res;
         try {
             res = await requestUrl({
-                url: trimmedUrl,
+                url: apiUrl,
                 method: 'GET',
                 headers,
                 throw: false
             });
         } catch (fetchErr: any) {
-            console.error('[AI Notebook] requestUrl failed for GitLab image:', trimmedUrl, fetchErr);
+            console.error('[AI Notebook] requestUrl failed for GitLab image:', apiUrl, fetchErr);
             throw new Error(`GitLab 画像取得通信エラー: ${fetchErr?.message || fetchErr}`);
         }
 
