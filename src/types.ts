@@ -28,6 +28,8 @@ export interface NotebookMetadata {
     activeSessionId?: string;
     boundFolderPath?: string; // 🗄️ Notebook単位のバインド外部フォルダ絶対パス (CIFS/ローカル共有)
     boundMmChannels?: MattermostChannelRef[]; // 💬 ノートブック単位のバインドMattermostチャンネル一覧
+    gitlabServerId?: string; // 🦊 Notebook単位のバインドGitLabサーバーID
+    gitlabProjectId?: string; // 🦊 Notebook単位のバインドGitLabプロジェクトID/パス
     systemId?: string; // 後方互換用
     templateId?: string; // 後方互換用
 }
@@ -67,16 +69,16 @@ export interface LinkedContext {
 }
 
 export interface SourceOrigin {
-    connectorId: 'box' | 'confluence' | 'cifs' | 'web';
+    connectorId: 'box' | 'confluence' | 'cifs' | 'web' | 'gitlab_upload';
     remoteUrl: string;       // ブラウザで開けるURL (出典表示・再訪用)
-    remoteId: string;        // Box file_id / Confluence pageId / CIFS絶対パス
+    remoteId: string;        // Box file_id / Confluence pageId / CIFS絶対パス / GitLab Upload ID
     relativeFolder?: string; // バインド起点からの相対フォルダ（例: "2024/NDPシステム_基盤更改"）
     remoteVersion?: string;  // etag / contentVersion / mtime (差分検知用)
     lastSyncedAt: string;    // 最終同期日時
 }
 
 export interface SourceItemRef {
-    connectorId: 'box' | 'confluence' | 'cifs' | 'web';
+    connectorId: 'box' | 'confluence' | 'cifs' | 'web' | 'gitlab_upload';
     remoteId: string;
     remoteUrl: string;
     title: string;
@@ -123,6 +125,9 @@ export interface AddSourceResult {
     originalSize?: number;
     compressedSize?: number;
     compressionRatio?: number;
+    isOffloaded?: boolean;         // 🦊 GitLab Uploads へのバイナリオフロード成否
+    offloadUrl?: string;          // オフロード先の完全URL
+    gitlabServerName?: string;    // オフロード先GitLabサーバー表示名
 }
 
 export interface NotebookArtifact {
@@ -239,6 +244,28 @@ export interface MattermostUser {
     email?: string;
 }
 
+export interface GitLabServerConfig {
+    id: string;               // 一意なID (UUID または slug)
+    name: string;             // 表示名 (例: "全社本番GitLab", "部署用セキュアGitLab")
+    baseUrl: string;          // ホストURL (例: "https://gitlab.example.com")
+    token: string;            // Personal Access Token / Project Access Token
+    defaultProjectId?: string;// デフォルトのプロジェクトID/パス (例: "knowledge/ainotebook-uploads")
+}
+
+export interface GitLabUploadResult {
+    success: boolean;
+    url?: string;             // 相対URL (例: /uploads/xxx/file.ext)
+    fullPath?: string;        // プロジェクト含む相対パス (例: /group/proj/uploads/xxx/file.ext)
+    markdown?: string;        // GitLab返却Markdown
+    absoluteUrl?: string;     // 完全なアクセスURL (例: https://gitlab.../uploads/xxx/file.ext)
+    fileName?: string;
+    fileSize?: number;
+    serverId?: string;
+    serverName?: string;
+    projectId?: string;
+    error?: string;
+}
+
 export interface AINotebookSettings {
     rootDir: string;
     activeAgent: AIAgentType;
@@ -253,6 +280,10 @@ export interface AINotebookSettings {
     compressImages?: boolean;      // 🖼️ 画像のWebP自動圧縮 (長辺1200px / 品質80%)
     imageMaxDimension?: number;    // 最大長辺ピクセル (デフォルト: 1200)
     imageQuality?: number;         // 圧縮品質 0.1〜1.0 (デフォルト: 0.8)
+    // 🦊 GitLab 連携 & マルチサーバー設定 (容量ゼロ化 Step 2)
+    gitlabServers?: GitLabServerConfig[];   // 登録されたGitLabサーバー一覧
+    defaultGitLabServerId?: string;         // デフォルトで使用するサーバーID
+    gitlabUploadsEnabled?: boolean;         // バイナリをGitLab Uploadsに自動オフロードするか (デフォルト: true)
 }
 
 export const DEFAULT_SETTINGS: AINotebookSettings = {
@@ -268,7 +299,10 @@ export const DEFAULT_SETTINGS: AINotebookSettings = {
     enableDebugActions: true,
     compressImages: true,
     imageMaxDimension: 1200,
-    imageQuality: 0.8
+    imageQuality: 0.8,
+    gitlabServers: [],
+    defaultGitLabServerId: '',
+    gitlabUploadsEnabled: true
 };
 
 

@@ -3,16 +3,19 @@ import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSe
 import { TranscriptionService } from './transcription/TranscriptionService';
 import { BoundFolderReader } from './BoundFolderReader';
 import { ImageCompressor } from './ImageCompressor';
+import { GitLabService } from './GitLabService';
 import { DebugFolderHelper } from '../utils/debugFolderHelper';
 import * as path from 'path';
 
 export class NotebookManager {
     app: App;
     settings: AINotebookSettings;
+    gitlabService?: GitLabService;
 
-    constructor(app: App, settings: AINotebookSettings) {
+    constructor(app: App, settings: AINotebookSettings, gitlabService?: GitLabService) {
         this.app = app;
         this.settings = settings;
+        this.gitlabService = gitlabService;
     }
 
     /**
@@ -718,6 +721,16 @@ export class NotebookManager {
     }
 
     /**
+     * ノートブックまたは既定設定から GitLab サーバー・プロジェクトを解決
+     */
+    async resolveGitLabTarget(notebookId: string): Promise<{ server?: any; projectId?: string }> {
+        const meta = await this.getNotebookMetadata(notebookId);
+        const server = this.gitlabService?.getServer(meta?.gitlabServerId);
+        const projectId = meta?.gitlabProjectId || server?.defaultProjectId;
+        return { server, projectId };
+    }
+
+    /**
      * ソースファイル一覧の取得
      */
     async getSources(id: string): Promise<NotebookSource[]> {
@@ -732,10 +745,16 @@ export class NotebookManager {
         for (const file of folder.children) {
             if (file instanceof TFile && !file.name.startsWith('.')) {
                 let convertedFrom: string | undefined = undefined;
-                // *.xlsx.md, *.pptx.md, *.docx.md の検出
-                const match = file.name.match(/^(.+\.(xlsx|xls|pptx|docx))\.md$/i);
-                if (match) {
-                    convertedFrom = match[1];
+                // *.xlsx.md, *.pptx.md, *.docx.md, *.pdf.md の検出
+                const docMatch = file.name.match(/^(.+\.(xlsx|xls|xlsm|pptx|docx|pdf))\.md$/i);
+                if (docMatch) {
+                    convertedFrom = docMatch[1];
+                } else {
+                    // 画像オフロード用 *.webp.md, *.png.md 等の検出
+                    const imgMatch = file.name.match(/^(.+\.(png|jpg|jpeg|webp|gif|bmp))\.md$/i);
+                    if (imgMatch) {
+                        convertedFrom = imgMatch[1];
+                    }
                 }
 
                 // 変換前ファイル名または現在のファイル名から origin を検索
@@ -821,6 +840,71 @@ export class NotebookManager {
 
                 await this.clearTranscriptionError(id, fileName);
 
+                // 🦊 GitLab Uploads への原本バイナリオフロード試行
+                const { server: gitlabServer, projectId: gitlabProjectId } = await this.resolveGitLabTarget(id);
+                const canOffload = !!(this.gitlabService && this.gitlabService.isUploadsEnabled(gitlabServer?.id) && gitlabProjectId);
+
+                let offloadResult: any = undefined;
+                if (canOffload) {
+                    DebugFolderHelper.logPipelineStep(
+                        fileName,
+                        5,
+                        'GitLab-Upload',
+                        `原本バイナリを GitLab Uploads へオフロード中... (サーバー: ${gitlabServer?.name}, プロジェクト: ${gitlabProjectId})`
+                    );
+                    offloadResult = await this.gitlabService!.uploadFile(buffer, fileName, {
+                        serverId: gitlabServer?.id,
+                        projectId: gitlabProjectId
+                    });
+                }
+
+                if (offloadResult?.success && offloadResult.absoluteUrl) {
+                    DebugFolderHelper.logPipelineStep(
+                        fileName,
+                        5,
+                        'GitLab-Upload',
+                        `オフロード完了: ${offloadResult.absoluteUrl} (ローカル原本保存をスキップ: 消費0バイト)`
+                    );
+
+                    // Markdown 冒頭に原本ダウンロードリンクを挿入
+                    const sizeStr = `${Math.round(buffer.length / 1024).toLocaleString()} KB`;
+                    const headerBanner = `> 📥 **原本ファイル**: [${fileName} (${sizeStr}) をダウンロード](${offloadResult.absoluteUrl})\n\n`;
+                    const finalMarkdown = headerBanner + markdown;
+
+                    // 変換後 Markdown を sources 直下に作成
+                    const mdPath = normalizePath(`${sourcesDir}/${convertedFilename}`);
+                    const resultFile = await this.safeCreateOrModify(mdPath, finalMarkdown);
+
+                    // origin に GitLab Upload 情報を保存
+                    const originInfo: SourceOrigin = {
+                        connectorId: 'gitlab_upload',
+                        remoteUrl: offloadResult.absoluteUrl,
+                        remoteId: offloadResult.url || '',
+                        remoteVersion: `${buffer.length}`,
+                        lastSyncedAt: new Date().toISOString()
+                    };
+                    const originsMap = await this.readSourcesOrigins(id);
+                    originsMap[convertedFilename] = originInfo;
+                    originsMap[fileName] = originInfo;
+                    await this.saveSourcesOrigins(id, originsMap);
+
+                    return {
+                        file: resultFile,
+                        isConverted: true,
+                        convertedFilename,
+                        metrics,
+                        isOffloaded: true,
+                        offloadUrl: offloadResult.absoluteUrl,
+                        gitlabServerName: gitlabServer?.name
+                    };
+                }
+
+                // オフロード未設定または失敗時：従来のローカル .cache/ に原本を保存（フォールバック）
+                if (canOffload && offloadResult && !offloadResult.success) {
+                    DebugFolderHelper.logPipelineError(fileName, 5, 'GitLab-Upload (Fallback)', new Error(offloadResult.error || 'GitLab アップロード失敗'));
+                    console.warn(`[AI Notebook] ⚠️ GitLab オフロード失敗のためローカル .cache/ へフォールバックします:`, offloadResult.error);
+                }
+
                 // 変換後 Markdown を sources 直下に作成
                 const mdPath = normalizePath(`${sourcesDir}/${convertedFilename}`);
                 const resultFile = await this.safeCreateOrModify(mdPath, markdown);
@@ -847,7 +931,8 @@ export class NotebookManager {
                     file: resultFile,
                     isConverted: true,
                     convertedFilename,
-                    metrics
+                    metrics,
+                    isOffloaded: false
                 };
             } catch (transcribeError: any) {
                 DebugFolderHelper.logPipelineError(fileName, 4, 'Parse', transcribeError, { bufferLength: buffer.length });
@@ -885,7 +970,6 @@ export class NotebookManager {
 
             const compResult = await ImageCompressor.compress(buffer, fileName, compressionOptions);
             const targetFilename = compResult.convertedFilename;
-            const targetPath = normalizePath(`${sourcesDir}/${targetFilename}`);
 
             DebugFolderHelper.logPipelineStep(
                 fileName,
@@ -894,8 +978,96 @@ export class NotebookManager {
                 `WebP圧縮完了: ${compResult.originalSize.toLocaleString()}B -> ${compResult.compressedSize.toLocaleString()}B (${compResult.ratio}%削減, ${compResult.width}x${compResult.height})`
             );
 
+            // 🦊 GitLab Uploads への画像オフロード試行
+            const { server: gitlabServer, projectId: gitlabProjectId } = await this.resolveGitLabTarget(id);
+            const canOffload = !!(this.gitlabService && this.gitlabService.isUploadsEnabled(gitlabServer?.id) && gitlabProjectId);
+
+            let offloadResult: any = undefined;
+            if (canOffload) {
+                DebugFolderHelper.logPipelineStep(
+                    fileName,
+                    5,
+                    'GitLab-Upload',
+                    `WebP画像を GitLab Uploads へオフロード中... (サーバー: ${gitlabServer?.name}, プロジェクト: ${gitlabProjectId})`
+                );
+                offloadResult = await this.gitlabService!.uploadFile(compResult.data, targetFilename, {
+                    serverId: gitlabServer?.id,
+                    projectId: gitlabProjectId
+                });
+            }
+
+            if (offloadResult?.success && offloadResult.absoluteUrl) {
+                DebugFolderHelper.logPipelineStep(
+                    fileName,
+                    5,
+                    'GitLab-Upload',
+                    `画像オフロード成功: ${offloadResult.absoluteUrl} (ローカル画像バイナリ保存をスキップ: 消費0バイト)`
+                );
+
+                // ローカルには画像バイナリを保存せず、軽量な参照 Markdown ファイル（例: sample.webp.md）を作成！
+                const mdFilename = `${targetFilename}.md`;
+                const mdPath = normalizePath(`${sourcesDir}/${mdFilename}`);
+
+                const origKb = Math.round(compResult.originalSize / 1024);
+                const compKb = Math.round(compResult.compressedSize / 1024);
+                const imageMarkdown = `---
+type: gitlab_image
+original_name: "${fileName}"
+webp_name: "${targetFilename}"
+gitlab_url: "${offloadResult.absoluteUrl}"
+original_size: ${compResult.originalSize}
+compressed_size: ${compResult.compressedSize}
+compression_ratio: ${compResult.ratio}
+uploaded_at: "${new Date().toISOString()}"
+---
+
+# 🖼️ ${fileName}
+
+![${fileName}](${offloadResult.absoluteUrl})
+
+- **原本画像 (GitLab)**: [ブラウザで開く / ダウンロード](${offloadResult.absoluteUrl})
+- **軽量化**: WebP圧縮 (${origKb} KB ➡ ${compKb} KB, ${compResult.ratio}%削減)
+`;
+
+                const savedFile = await this.safeCreateOrModify(mdPath, imageMarkdown);
+
+                // origin に GitLab Upload 情報を保存
+                const originInfo: SourceOrigin = {
+                    connectorId: 'gitlab_upload',
+                    remoteUrl: offloadResult.absoluteUrl,
+                    remoteId: offloadResult.url || '',
+                    remoteVersion: `${compResult.compressedSize}`,
+                    lastSyncedAt: new Date().toISOString()
+                };
+                const originsMap = await this.readSourcesOrigins(id);
+                originsMap[mdFilename] = originInfo;
+                originsMap[targetFilename] = originInfo;
+                originsMap[fileName] = originInfo;
+                await this.saveSourcesOrigins(id, originsMap);
+
+                return {
+                    file: savedFile,
+                    isConverted: false,
+                    isImageCompressed: true,
+                    convertedFilename: mdFilename,
+                    originalSize: compResult.originalSize,
+                    compressedSize: compResult.compressedSize,
+                    compressionRatio: compResult.ratio,
+                    isOffloaded: true,
+                    offloadUrl: offloadResult.absoluteUrl,
+                    gitlabServerName: gitlabServer?.name
+                };
+            }
+
+            // オフロード未設定または失敗時：従来通りローカルに WebP バイナリを直接保存（フォールバック）
+            if (canOffload && offloadResult && !offloadResult.success) {
+                DebugFolderHelper.logPipelineError(fileName, 5, 'GitLab-Upload (Fallback)', new Error(offloadResult.error || 'GitLab 画像アップロード失敗'));
+                console.warn(`[AI Notebook] ⚠️ GitLab 画像オフロード失敗のためローカル保存へフォールバックします:`, offloadResult.error);
+            }
+
+            const targetPath = normalizePath(`${sourcesDir}/${targetFilename}`);
             const savedFile = await this.safeCreateOrModifyBinary(targetPath, compResult.data);
-            DebugFolderHelper.logPipelineStep(fileName, 5, 'Save', `WebP画像保存完了: ${targetFilename}`);
+            DebugFolderHelper.logPipelineStep(fileName, 5, 'Save (Local)', `WebP画像保存完了: ${targetFilename}`);
 
             return {
                 file: savedFile,
@@ -904,7 +1076,8 @@ export class NotebookManager {
                 convertedFilename: targetFilename,
                 originalSize: compResult.originalSize,
                 compressedSize: compResult.compressedSize,
-                compressionRatio: compResult.ratio
+                compressionRatio: compResult.ratio,
+                isOffloaded: false
             };
         }
 
@@ -942,33 +1115,60 @@ export class NotebookManager {
             rawFile = this.app.vault.getAbstractFileByPath(rawInCache);
         }
 
-        if (!(rawFile instanceof TFile)) {
-            const msg = `原本ファイルが見つかりません: ${fileName}`;
+        let buffer: Buffer | null = null;
+        let originalArrayBuf: ArrayBuffer | null = null;
+        let isDownloadedFromGitLab = false;
+
+        if (rawFile instanceof TFile) {
+            originalArrayBuf = await this.app.vault.readBinary(rawFile);
+            buffer = Buffer.from(originalArrayBuf);
+        } else {
+            // ローカル原本がない場合、GitLab オフロードリンクを探索
+            const originsMap = await this.readSourcesOrigins(id);
+            const origin = originsMap[fileName] || originsMap[`${fileName}.md`];
+            if (origin && origin.connectorId === 'gitlab_upload' && origin.remoteUrl && this.gitlabService) {
+                try {
+                    DebugFolderHelper.logPipelineStep(fileName, 1, 'GitLab-Fetch', `GitLabから原本をオンデマンド取得中: ${origin.remoteUrl}`);
+                    const { server } = await this.resolveGitLabTarget(id);
+                    originalArrayBuf = await this.gitlabService.downloadFile(origin.remoteUrl, server?.id);
+                    buffer = Buffer.from(originalArrayBuf);
+                    isDownloadedFromGitLab = true;
+                } catch (fetchErr: any) {
+                    DebugFolderHelper.logPipelineError(fileName, 1, 'GitLab-Fetch', fetchErr);
+                    return { success: false, error: `GitLab からの原本ダウンロードに失敗しました: ${fetchErr?.message || fetchErr}` };
+                }
+            }
+        }
+
+        if (!buffer || buffer.length === 0) {
+            const msg = `原本ファイルが見つかりません（ローカルおよび GitLab 上にデータがありません）: ${fileName}`;
             DebugFolderHelper.logPipelineError(fileName, 1, 'Retry', new Error(msg));
             return { success: false, error: msg };
         }
 
         try {
-            const arrayBuf = await this.app.vault.readBinary(rawFile);
-            const buffer = Buffer.from(arrayBuf);
-            if (buffer.length === 0) {
-                throw new Error(`ファイルデータが空（0バイト）です。`);
-            }
-
             const { markdown, convertedFilename, metrics } = await TranscriptionService.transcribe(buffer, fileName);
             DebugFolderHelper.logPipelineStep(fileName, 2, 'Retry-Parse', `再パース成功 (${metrics?.durationMs}ms, ${metrics?.lineCount}行)`, metrics);
 
-            // 変換後 Markdown を sources 直下に作成
+            // 変換後 Markdown を sources 直下に作成（GitLabダウンロード時はリンクヘッダーを維持）
+            const originsMap = await this.readSourcesOrigins(id);
+            const origin = originsMap[fileName] || originsMap[`${fileName}.md`];
+            let finalMarkdown = markdown;
+            if (isDownloadedFromGitLab && origin?.remoteUrl) {
+                const sizeStr = `${Math.round(buffer.length / 1024).toLocaleString()} KB`;
+                const headerBanner = `> 📥 **原本ファイル**: [${fileName} (${sizeStr}) をダウンロード](${origin.remoteUrl})\n\n`;
+                finalMarkdown = headerBanner + markdown;
+            }
+
             const mdPath = normalizePath(`${sourcesDir}/${convertedFilename}`);
-            await this.safeCreateOrModify(mdPath, markdown);
+            await this.safeCreateOrModify(mdPath, finalMarkdown);
 
-            // 原本を .cache/ に移動（sources/ 直下にある場合は .cache へ移管して sources/ 直下の原本を削除）
-            const cacheDir = normalizePath(`${sourcesDir}/.cache`);
-            await this.ensureFolder(cacheDir);
-            const cachePath = normalizePath(`${cacheDir}/${fileName}`);
-
-            if (rawFile.path === rawInSources) {
-                await this.safeCreateOrModifyBinary(cachePath, arrayBuf);
+            // ローカルファイルが存在する場合のみ .cache/ に移動
+            if (rawFile instanceof TFile && rawFile.path === rawInSources) {
+                const cacheDir = normalizePath(`${sourcesDir}/.cache`);
+                await this.ensureFolder(cacheDir);
+                const cachePath = normalizePath(`${cacheDir}/${fileName}`);
+                await this.safeCreateOrModifyBinary(cachePath, originalArrayBuf!);
                 await this.app.vault.delete(rawFile);
             }
 
@@ -978,7 +1178,7 @@ export class NotebookManager {
         } catch (err: any) {
             DebugFolderHelper.logPipelineError(fileName, 2, 'Retry-Parse', err);
             console.error(`Retranscription failed for ${fileName}:`, err);
-            const fileSize = (rawFile instanceof TFile) ? rawFile.stat.size : 0;
+            const fileSize = buffer ? buffer.length : 0;
             await this.recordTranscriptionError(id, fileName, err, fileSize);
             return { success: false, error: err?.message || String(err) };
         }
@@ -1003,7 +1203,7 @@ export class NotebookManager {
         }
 
         // *.md が削除された場合、元のバイナリキャッシュも探索して削除
-        const match = fileName.match(/^(.+\.(xlsx|xls|pptx|docx))\.md$/i);
+        const match = fileName.match(/^(.+\.(xlsx|xls|xlsm|pptx|docx|pdf))\.md$/i);
         if (match) {
             const origCachePath = normalizePath(`${sourcesDir}/.cache/${match[1]}`);
             const origCacheFile = this.app.vault.getAbstractFileByPath(origCachePath);

@@ -2,6 +2,7 @@ import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
 import type AINotebookPlugin from './main';
 import { AIAgentType } from './types';
 import { MattermostPresetModal } from './views/modals/MattermostPresetModal';
+import { GitLabServerModal } from './views/modals/GitLabServerModal';
 
 export class AINotebookSettingTab extends PluginSettingTab {
     plugin: AINotebookPlugin;
@@ -221,6 +222,110 @@ export class AINotebookSettingTab extends PluginSettingTab {
                         await this.plugin.saveSettings();
                     }
                 }));
+
+        // ============================================================
+        // 🦊 GitLab 連携 & 容量ゼロ化設定 (マルチサーバー対応 Step 2)
+        // ============================================================
+        containerEl.createEl('h3', { text: '🦊 GitLab 連携 & 容量ゼロ化設定 (マルチサーバー対応)' });
+
+        new Setting(containerEl)
+            .setName('GitLab Uploads へのバイナリオフロード')
+            .setDesc('D&D投入された画像やOffice/PDF原本を GitLab Projects Uploads API に直接保存し、ローカルVaultのSSDおよびGitリポジトリ消費を0バイト化します')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.gitlabUploadsEnabled ?? true)
+                .onChange(async (value) => {
+                    this.plugin.settings.gitlabUploadsEnabled = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        const servers = this.plugin.settings.gitlabServers || [];
+
+        if (servers.length > 0) {
+            new Setting(containerEl)
+                .setName('既定の GitLab サーバー')
+                .setDesc('ノートブック側でサーバーが未指定の場合に自動適用される優先サーバーを選択します')
+                .addDropdown(dropdown => {
+                    for (const s of servers) {
+                        dropdown.addOption(s.id, `${s.name} (${s.baseUrl})`);
+                    }
+                    dropdown.setValue(this.plugin.settings.defaultGitLabServerId || servers[0].id);
+                    dropdown.onChange(async (value) => {
+                        this.plugin.settings.defaultGitLabServerId = value;
+                        await this.plugin.saveSettings();
+                    });
+                });
+        }
+
+        const serverHeaderSetting = new Setting(containerEl)
+            .setName('登録済み GitLab サーバー一覧')
+            .setDesc('全社GitLab、特定部署用GitLab、GitLab.com などを複数登録して使い分けられます');
+
+        serverHeaderSetting.addButton(btn => btn
+            .setButtonText('➕ 新規サーバー追加')
+            .setCta()
+            .onClick(() => {
+                new GitLabServerModal(this.app, this.plugin, null, () => {
+                    this.display();
+                }).open();
+            }));
+
+        if (servers.length === 0) {
+            const emptyEl = containerEl.createDiv({ cls: 'ai-notebook-empty-box' });
+            emptyEl.createDiv({
+                text: '登録されている GitLab サーバーはありません。「新規サーバー追加」から社内GitLab等を登録すると、バイナリオフロードやソースコード検索が利用可能になります。',
+                cls: 'ai-notebook-empty-text'
+            });
+        } else {
+            const serverListContainer = containerEl.createDiv({ cls: 'ai-notebook-settings-preset-list' });
+            for (const s of servers) {
+                const isDefault = (this.plugin.settings.defaultGitLabServerId === s.id) || (servers.length === 1);
+                const defaultBadge = isDefault ? ' ★既定' : '';
+                const projText = s.defaultProjectId ? ` / プロジェクト: ${s.defaultProjectId}` : ' (プロジェクト未指定)';
+
+                const itemSetting = new Setting(serverListContainer)
+                    .setName(`🦊 ${s.name}${defaultBadge}`)
+                    .setDesc(`URL: ${s.baseUrl}${projText}`);
+
+                // 疎通テストボタン
+                itemSetting.addButton(btn => btn
+                    .setButtonText('🔌 テスト')
+                    .onClick(async () => {
+                        btn.setButtonText('確認中...');
+                        btn.setDisabled(true);
+                        const res = await this.plugin.gitlabService.testConnection(s, s.defaultProjectId);
+                        btn.setButtonText('🔌 テスト');
+                        btn.setDisabled(false);
+                        if (res.success) {
+                            new Notice(res.message, 6000);
+                        } else {
+                            new Notice(`❌ ${res.message}`, 8000);
+                        }
+                    }));
+
+                // 編集ボタン
+                itemSetting.addButton(btn => btn
+                    .setButtonText('編集')
+                    .onClick(() => {
+                        new GitLabServerModal(this.app, this.plugin, s, () => {
+                            this.display();
+                        }).open();
+                    }));
+
+                // 削除ボタン
+                itemSetting.addButton(btn => btn
+                    .setButtonText('削除')
+                    .setWarning()
+                    .onClick(async () => {
+                        this.plugin.settings.gitlabServers = servers.filter(item => item.id !== s.id);
+                        if (this.plugin.settings.defaultGitLabServerId === s.id) {
+                            this.plugin.settings.defaultGitLabServerId = this.plugin.settings.gitlabServers[0]?.id || '';
+                        }
+                        await this.plugin.saveSettings();
+                        new Notice(`GitLab サーバー「${s.name}」を削除しました`);
+                        this.display();
+                    }));
+            }
+        }
 
         // ============================================================
         // 🛠️ デバッグ機能設定 (将来不要時に容易に撤去可能)

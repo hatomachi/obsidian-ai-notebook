@@ -1399,6 +1399,44 @@
     max-width: 100%;
 }
 
+.ai-notebook-badge-gitlab {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: #fc6d26;
+    background-color: rgba(252, 109, 38, 0.12);
+    border: 1px solid rgba(252, 109, 38, 0.25);
+    border-radius: 4px;
+    padding: 1px 5px;
+    width: fit-content;
+    margin-top: 2px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.ai-notebook-badge-gitlab:hover {
+    background-color: rgba(252, 109, 38, 0.22);
+    text-decoration: underline;
+}
+
+.ai-notebook-badge-image {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--text-accent);
+    background-color: rgba(var(--interactive-accent-rgb, 100, 100, 255), 0.1);
+    border-radius: 4px;
+    padding: 1px 4px;
+    width: fit-content;
+    margin-top: 2px;
+}
+
+.ai-notebook-field-desc {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    margin-top: -2px;
+    margin-bottom: 6px;
+}
+
 /* Bound Folder Section in Left Panel */
 .ai-notebook-bound-section {
     border-bottom: 1px solid var(--background-modifier-border);

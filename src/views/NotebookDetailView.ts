@@ -541,9 +541,22 @@ export class AINotebookDetailView extends ItemView {
                         badge.setText('📄 Word変換');
                     } else if (origExt === 'pdf') {
                         badge.setText('📕 PDF変換');
+                    } else if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(origExt)) {
+                        badge.setText('🖼️ 画像ノート');
                     } else {
                         badge.setText('変換済');
                     }
+                }
+
+                // 🦊 GitLab Uploads オフロードバッジ表示
+                if (src.origin?.connectorId === 'gitlab_upload' && src.origin.remoteUrl) {
+                    const gitlabBadge = nameWrap.createSpan({ cls: 'ai-notebook-badge-gitlab' });
+                    gitlabBadge.setText('🦊 GitLab原本');
+                    gitlabBadge.setAttribute('title', `GitLab Uploads に保存済み (Vault消費0バイト)\nURL: ${src.origin.remoteUrl}\nクリックでブラウザで開く`);
+                    gitlabBadge.onclick = (e) => {
+                        e.stopPropagation();
+                        window.open(src.origin!.remoteUrl, '_blank');
+                    };
                 }
 
                 // 変換エラー時の警告バッジ表示
@@ -612,6 +625,7 @@ export class AINotebookDetailView extends ItemView {
         let addedCount = 0;
         let convertedCount = 0;
         let compressedImageCount = 0;
+        let offloadedCount = 0;
         let failedCount = 0;
 
         try {
@@ -678,9 +692,11 @@ export class AINotebookDetailView extends ItemView {
                     }
                 }
                 if (!buffer || (buffer as any).byteLength === 0) {
-                    try {
-                        buffer = await file.arrayBuffer();
-                    } catch {}
+                    if (!fileLockDetected) {
+                        try {
+                            buffer = await file.arrayBuffer();
+                        } catch {}
+                    }
                 }
             }
 
@@ -699,6 +715,10 @@ export class AINotebookDetailView extends ItemView {
 
             try {
                 const result = await this.plugin.notebookManager.addSourceFile(this.notebookId, fileName, buffer);
+                if (result.isOffloaded) {
+                    offloadedCount++;
+                }
+
                 if (result.transcriptionFailed) {
                     failedCount++;
                     new Notice(`⚠️ "${fileName}" のテキスト変換に失敗しました: ${result.error}\n（原本バイナリを直接保存しました）`, 8000);
@@ -706,12 +726,14 @@ export class AINotebookDetailView extends ItemView {
                     convertedCount++;
                     const origExt = (fileName.split('.').pop() || '').toLowerCase();
                     const icon = origExt === 'pdf' ? '📕' : '✅';
-                    new Notice(`${icon} "${fileName}" を Markdown に変換しました (${result.metrics?.lineCount || 0}行)`, 4000);
+                    const offloadHint = result.isOffloaded ? ` (🦊 GitLab原本オフロード: 0B消費)` : '';
+                    new Notice(`${icon} "${fileName}" を Markdown に変換しました (${result.metrics?.lineCount || 0}行)${offloadHint}`, 4000);
                 } else if (result.isImageCompressed) {
                     compressedImageCount++;
                     const origKb = Math.round((result.originalSize || 0) / 1024);
                     const compKb = Math.round((result.compressedSize || 0) / 1024);
-                    new Notice(`🖼️ "${fileName}" を WebP に圧縮しました (${origKb}KB ➡ ${compKb}KB, ${result.compressionRatio}%削減)`, 5000);
+                    const offloadHint = result.isOffloaded ? ` (🦊 GitLab画像オフロード: 0B消費)` : '';
+                    new Notice(`🖼️ "${fileName}" を WebP に圧縮しました (${origKb}KB ➡ ${compKb}KB, ${result.compressionRatio}%削減)${offloadHint}`, 5000);
                 } else {
                     addedCount++;
                 }
@@ -725,6 +747,7 @@ export class AINotebookDetailView extends ItemView {
         const totalSuccessful = addedCount + convertedCount + compressedImageCount;
         if (totalSuccessful > 0 || failedCount > 0) {
             const summaryParts: string[] = [];
+            if (offloadedCount > 0) summaryParts.push(`🦊 ${offloadedCount}件をGitLabへオフロード(容量0B)`);
             if (compressedImageCount > 0) summaryParts.push(`${compressedImageCount}件をWebP圧縮`);
             if (convertedCount > 0) summaryParts.push(`${convertedCount}件をテキスト変換`);
             if (addedCount > 0) summaryParts.push(`${addedCount}件を追加`);

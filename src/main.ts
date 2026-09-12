@@ -3,6 +3,7 @@ import { AINotebookSettings, DEFAULT_SETTINGS } from './types';
 import { AINotebookSettingTab } from './settings';
 import { NotebookManager } from './services/NotebookManager';
 import { MattermostService } from './services/MattermostService';
+import { GitLabService } from './services/GitLabService';
 import { AINotebookGalleryView, VIEW_TYPE_GALLERY } from './views/GalleryView';
 import { AINotebookDetailView, VIEW_TYPE_DETAIL } from './views/NotebookDetailView';
 
@@ -10,13 +11,15 @@ export default class AINotebookPlugin extends Plugin {
     settings!: AINotebookSettings;
     notebookManager!: NotebookManager;
     mattermostService!: MattermostService;
+    gitlabService!: GitLabService;
 
     async onload(): Promise<void> {
         console.log('Loading Obsidian AI Notebook Plugin');
 
         await this.loadSettings();
 
-        this.notebookManager = new NotebookManager(this.app, this.settings);
+        this.gitlabService = new GitLabService(this.settings);
+        this.notebookManager = new NotebookManager(this.app, this.settings, this.gitlabService);
         this.mattermostService = new MattermostService(this.settings);
 
         // 基本フォルダ構造の自動作成
@@ -122,6 +125,9 @@ export default class AINotebookPlugin extends Plugin {
         }
         if (this.mattermostService) {
             this.mattermostService.updateSettings(this.settings);
+        }
+        if (this.gitlabService) {
+            this.gitlabService.updateSettings(this.settings);
         }
     }
 }
