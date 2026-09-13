@@ -361,6 +361,7 @@ function setupTools(input: NotebookProjectInput): void {
             token: input.confluenceConfig.token,
             username: input.confluenceConfig.username,
             defaultSpaceKey: input.confluenceConfig.defaultSpaceKey,
+            insecureSsl: input.confluenceConfig.insecureSsl,
             userHintsPath: input.userHintsPath,
             notebookHintsPath: path.join(input.notebookDir, 'HINTS.md')
         };

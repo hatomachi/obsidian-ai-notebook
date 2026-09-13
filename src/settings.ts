@@ -76,6 +76,31 @@ export class AINotebookSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
+        // 🛡️ 社内プロキシ・CLI環境設定
+        containerEl.createEl('h4', { text: '🛡️ AI CLI プロキシ環境設定（社内ネットワーク用）' });
+
+        new Setting(containerEl)
+            .setName('AI CLI プロキシ URL (HTTP_PROXY / HTTPS_PROXY)')
+            .setDesc('社外の Anthropic / Google API へアクセスする際にプロキシが必要な環境で指定します（例: http://proxy.company.com:8080）。Obsidian から起動される CLI プロセスに自動注入されます。')
+            .addText(text => text
+                .setPlaceholder('http://proxy.company.com:8080')
+                .setValue(this.plugin.settings.cliProxyUrl || '')
+                .onChange(async (value) => {
+                    this.plugin.settings.cliProxyUrl = value.trim();
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('プロキシ除外ホスト (NO_PROXY)')
+            .setDesc('プロキシを経由せず直接接続するホスト名・ドメイン（例: localhost,127.0.0.1,.company.internal）。社内 GitLab / Confluence への誤接続を防止します。')
+            .addText(text => text
+                .setPlaceholder('localhost,127.0.0.1,.company.internal')
+                .setValue(this.plugin.settings.cliNoProxy || '')
+                .onChange(async (value) => {
+                    this.plugin.settings.cliNoProxy = value.trim();
+                    await this.plugin.saveSettings();
+                }));
+
         containerEl.createEl('h3', { text: '外部ソース & ファイルサーバー設定' });
 
         new Setting(containerEl)

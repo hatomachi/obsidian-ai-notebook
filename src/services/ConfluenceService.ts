@@ -1,4 +1,4 @@
-import { requestUrl } from 'obsidian';
+import { HttpClient } from './HttpClient';
 import {
     AINotebookSettings,
     ConfluenceServerConfig,
@@ -114,20 +114,24 @@ export class ConfluenceService {
             // /rest/api/space または /wiki/rest/api/space を叩く
             const headers = this.buildAuthHeaders(server);
             let testUrl = `${baseUrl}/rest/api/space`;
-            let res = await requestUrl({
+            let res = await HttpClient.request({
                 url: testUrl,
                 method: 'GET',
                 headers,
+                connectionMode: server.connectionMode,
+                insecureSsl: server.insecureSsl,
                 throw: false
             });
 
             // 404 の場合、Atlassian Cloud 形式 (/wiki/rest/api/space) を試行
             if (res.status === 404 && !baseUrl.includes('/wiki')) {
                 testUrl = `${baseUrl}/wiki/rest/api/space`;
-                res = await requestUrl({
+                res = await HttpClient.request({
                     url: testUrl,
                     method: 'GET',
                     headers,
+                    connectionMode: server.connectionMode,
+                    insecureSsl: server.insecureSsl,
                     throw: false
                 });
             }
@@ -137,7 +141,13 @@ export class ConfluenceService {
                     return { success: false, message: '認証失敗 (401 Unauthorized): トークンまたは認証情報が無効です。' };
                 }
                 if (res.status === 403) {
-                    return { success: false, message: 'アクセス拒否 (403 Forbidden): 権限が不足しています。' };
+                    const viaHeader = HttpClient.getHeader(res.headers, 'via');
+                    const serverHeader = HttpClient.getHeader(res.headers, 'server');
+                    const isProxy = /zscaler|squid|bluecoat|envoy|nginx|apache/i.test(serverHeader || '') || Boolean(viaHeader) || (res.text || '').includes('Blocked');
+                    if (isProxy) {
+                        return { success: false, message: 'アクセス拒否 (403 Forbidden): 社内プロキシまたはセキュリティゲートウェイによってブロックされた可能性があります。サーバー設定で「接続モード」を「ダイレクト通信」に切り替えてみてください。' };
+                    }
+                    return { success: false, message: 'アクセス拒否 (403 Forbidden): 権限が不足しているか、社内プロキシでブロックされた可能性があります。' };
                 }
                 return { success: false, message: `接続失敗 (HTTP ${res.status})` };
             }
@@ -180,19 +190,23 @@ export class ConfluenceService {
         });
 
         let searchUrl = `${baseUrl}/rest/api/content/search?${queryParams.toString()}`;
-        let res = await requestUrl({
+        let res = await HttpClient.request({
             url: searchUrl,
             method: 'GET',
             headers,
+            connectionMode: server.connectionMode,
+            insecureSsl: server.insecureSsl,
             throw: false
         });
 
         if (res.status === 404 && !baseUrl.includes('/wiki')) {
             searchUrl = `${baseUrl}/wiki/rest/api/content/search?${queryParams.toString()}`;
-            res = await requestUrl({
+            res = await HttpClient.request({
                 url: searchUrl,
                 method: 'GET',
                 headers,
+                connectionMode: server.connectionMode,
+                insecureSsl: server.insecureSsl,
                 throw: false
             });
         }
@@ -262,19 +276,23 @@ export class ConfluenceService {
         const expand = options.expand || 'body.storage,body.view,ancestors,space,version';
 
         let pageUrl = `${baseUrl}/rest/api/content/${pageId}?expand=${expand}`;
-        let res = await requestUrl({
+        let res = await HttpClient.request({
             url: pageUrl,
             method: 'GET',
             headers,
+            connectionMode: server.connectionMode,
+            insecureSsl: server.insecureSsl,
             throw: false
         });
 
         if (res.status === 404 && !baseUrl.includes('/wiki')) {
             pageUrl = `${baseUrl}/wiki/rest/api/content/${pageId}?expand=${expand}`;
-            res = await requestUrl({
+            res = await HttpClient.request({
                 url: pageUrl,
                 method: 'GET',
                 headers,
+                connectionMode: server.connectionMode,
+                insecureSsl: server.insecureSsl,
                 throw: false
             });
         }

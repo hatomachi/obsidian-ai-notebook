@@ -19,7 +19,7 @@ export class AntigravityCliAdapter implements AIAgentAdapter {
     async executePrompt(userPrompt: string, options: AgentOptions): Promise<AgentResult> {
         const command = options.commandPath || 'agy';
         const exePath = resolveCommandPath(command);
-        const env = getExtendedEnv();
+        const env = getExtendedEnv({ cliProxyUrl: options.cliProxyUrl, cliNoProxy: options.cliNoProxy });
 
         const notebookDir = options.notebookDir || options.contextDir || process.cwd();
         const artifactsDir = options.artifactsDir || path.join(notebookDir, 'artifacts');

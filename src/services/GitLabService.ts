@@ -1,4 +1,4 @@
-import { requestUrl } from 'obsidian';
+import { HttpClient } from './HttpClient';
 import { AINotebookSettings, GitLabServerConfig, GitLabUploadResult, GitLabTreeItem, GitLabCommitAction, GitLabCommitPayload } from '../types';
 
 /**
@@ -199,13 +199,15 @@ export class GitLabService {
 
         try {
             // 1. ユーザー情報確認
-            const userRes = await requestUrl({
+            const userRes = await HttpClient.request({
                 url: `${baseUrl}/user`,
                 method: 'GET',
                 headers: {
                     'PRIVATE-TOKEN': token,
                     Accept: 'application/json',
                 },
+                connectionMode: server.connectionMode,
+                insecureSsl: server.insecureSsl,
                 throw: false
             });
 
@@ -224,13 +226,15 @@ export class GitLabService {
             let projectData: any = undefined;
             if (targetProjectId?.trim()) {
                 const encodedPid = encodeProjectId(targetProjectId);
-                const projRes = await requestUrl({
+                const projRes = await HttpClient.request({
                     url: `${baseUrl}/projects/${encodedPid}`,
                     method: 'GET',
                     headers: {
                         'PRIVATE-TOKEN': token,
                         Accept: 'application/json',
                     },
+                    connectionMode: server.connectionMode,
+                    insecureSsl: server.insecureSsl,
                     throw: false
                 });
 
@@ -295,38 +299,37 @@ export class GitLabService {
         const uploadEndpoint = `${baseUrl}/projects/${encodedPid}/uploads`;
 
         try {
-            // Buffer または ArrayBuffer を Uint8Array 経由で Blob に変換
             const uint8Array = Buffer.isBuffer(data)
                 ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
                 : new Uint8Array(data);
-            const blob = new Blob([uint8Array as any]);
 
-            const formData = new FormData();
-            formData.append('file', blob, fileName);
-
-            const res = await fetch(uploadEndpoint, {
-                method: 'POST',
-                headers: {
-                    'PRIVATE-TOKEN': server.token.trim(),
-                    // Content-Type は FormData によって boundary 付きで自動付与される
+            const res = await HttpClient.uploadMultipart(
+                uploadEndpoint,
+                uint8Array,
+                fileName,
+                'file',
+                {
+                    'PRIVATE-TOKEN': server.token.trim()
                 },
-                body: formData
-            });
+                {
+                    connectionMode: server.connectionMode,
+                    insecureSsl: server.insecureSsl
+                }
+            );
 
-            if (!res.ok) {
-                const errText = await res.text().catch(() => '');
+            if (res.status >= 400) {
                 return {
                     success: false,
                     fileName,
-                    fileSize: blob.size,
+                    fileSize: uint8Array.byteLength,
                     serverId: server.id,
                     serverName: server.name,
                     projectId,
-                    error: `GitLab Uploads API エラー (HTTP ${res.status}): ${errText || res.statusText}`
+                    error: `GitLab Uploads API エラー (HTTP ${res.status}): ${res.text}`
                 };
             }
 
-            const json = await res.json();
+            const json = res.json || {};
             const relUrl = json.url || '';
             const fullPath = json.full_path || '';
             const markdown = json.markdown || '';
@@ -346,7 +349,7 @@ export class GitLabService {
                 markdown,
                 absoluteUrl,
                 fileName,
-                fileSize: blob.size,
+                fileSize: uint8Array.byteLength,
                 serverId: server.id,
                 serverName: server.name,
                 projectId
@@ -384,10 +387,12 @@ export class GitLabService {
             headers['PRIVATE-TOKEN'] = server.token.trim();
         }
 
-        const res = await requestUrl({
+        const res = await HttpClient.request({
             url: apiUrl,
             method: 'GET',
             headers,
+            connectionMode: server?.connectionMode,
+            insecureSsl: server?.insecureSsl,
             throw: false
         });
 
@@ -467,10 +472,12 @@ export class GitLabService {
 
         let res;
         try {
-            res = await requestUrl({
+            res = await HttpClient.request({
                 url: apiUrl,
                 method: 'GET',
                 headers,
+                connectionMode: server?.connectionMode,
+                insecureSsl: server?.insecureSsl,
                 throw: false
             });
         } catch (fetchErr: any) {
@@ -541,13 +548,15 @@ export class GitLabService {
             if (options?.path) url += `&path=${encodeURIComponent(options.path)}`;
 
             try {
-                const res = await requestUrl({
+                const res = await HttpClient.request({
                     url,
                     method: 'GET',
                     headers: {
                         'PRIVATE-TOKEN': server.token.trim(),
                         Accept: 'application/json'
                     },
+                    connectionMode: server.connectionMode,
+                    insecureSsl: server.insecureSsl,
                     throw: false
                 });
 
@@ -603,12 +612,14 @@ export class GitLabService {
         const encodedFilePath = encodeURIComponent(filePath);
         const url = `${baseUrl}/projects/${encodedPid}/repository/files/${encodedFilePath}/raw?ref=${encodeURIComponent(branch)}`;
 
-        const res = await requestUrl({
+        const res = await HttpClient.request({
             url,
             method: 'GET',
             headers: {
                 'PRIVATE-TOKEN': server.token.trim()
             },
+            connectionMode: server.connectionMode,
+            insecureSsl: server.insecureSsl,
             throw: false
         });
 
@@ -642,12 +653,14 @@ export class GitLabService {
         const encodedFilePath = encodeURIComponent(filePath);
         const url = `${baseUrl}/projects/${encodedPid}/repository/files/${encodedFilePath}/raw?ref=${encodeURIComponent(branch)}`;
 
-        const res = await requestUrl({
+        const res = await HttpClient.request({
             url,
             method: 'GET',
             headers: {
                 'PRIVATE-TOKEN': server.token.trim()
             },
+            connectionMode: server.connectionMode,
+            insecureSsl: server.insecureSsl,
             throw: false
         });
 
@@ -679,12 +692,14 @@ export class GitLabService {
         const url = `${baseUrl}/projects/${encodedPid}/repository/files/${encodedFilePath}?ref=${encodeURIComponent(branch)}`;
 
         try {
-            const res = await requestUrl({
+            const res = await HttpClient.request({
                 url,
                 method: 'HEAD',
                 headers: {
                     'PRIVATE-TOKEN': server.token.trim()
                 },
+                connectionMode: server.connectionMode,
+                insecureSsl: server.insecureSsl,
                 throw: false
             });
             return res.status >= 200 && res.status < 300;
@@ -730,7 +745,7 @@ export class GitLabService {
         };
 
         try {
-            const res = await requestUrl({
+            const res = await HttpClient.request({
                 url: commitEndpoint,
                 method: 'POST',
                 headers: {
@@ -739,6 +754,8 @@ export class GitLabService {
                     Accept: 'application/json'
                 },
                 body: JSON.stringify(commitPayload),
+                connectionMode: server.connectionMode,
+                insecureSsl: server.insecureSsl,
                 throw: false
             });
 

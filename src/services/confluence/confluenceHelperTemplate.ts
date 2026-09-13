@@ -58,6 +58,10 @@ function apiRequest(endpoint) {
             headers
         };
 
+        if (isHttps && config.insecureSsl) {
+            options.rejectUnauthorized = false;
+        }
+
         const req = client.request(options, (res) => {
             let data = '';
             res.on('data', chunk => { data += chunk; });

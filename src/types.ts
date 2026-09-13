@@ -266,6 +266,8 @@ export interface GitLabServerConfig {
     token: string;            // Personal Access Token / Project Access Token
     defaultProjectId?: string;// デフォルトのプロジェクトID/パス (例: "knowledge/ainotebook-uploads")
     defaultBranch?: string;   // 同期・参照ブランチ (デフォルト: "main")
+    connectionMode?: 'default' | 'direct'; // 'direct': Node.js http/https でPAC・プロキシを完全バイパス, 'default': Obsidian標準
+    insecureSsl?: boolean;    // 自己署名証明書・社内プライベートCAの検証エラーをスキップ
 }
 
 export interface GitLabTreeItem {
@@ -314,6 +316,8 @@ export interface ConfluenceServerConfig {
     username?: string;        // Basic認証用 (email / username)
     token: string;            // Bearerトークン または APIトークン / パスワード
     defaultSpaceKey?: string; // デフォルト検索スペース (例: "DEV-ARCH")
+    connectionMode?: 'default' | 'direct'; // 'direct': Node.js http/https でPAC・プロキシを完全バイパス, 'default': Obsidian標準
+    insecureSsl?: boolean;    // 自己署名証明書・社内プライベートCAの検証エラーをスキップ
 }
 
 export interface ConfluenceAncestor {
@@ -404,6 +408,9 @@ export interface AINotebookSettings {
     // 🌐 Confluence 連携設定
     confluenceServers?: ConfluenceServerConfig[]; // 登録されたConfluenceサーバー一覧
     defaultConfluenceServerId?: string;          // デフォルトで使用するConfluenceサーバーID
+    // 🛡️ プロキシ・社内環境設定
+    cliProxyUrl?: string;                   // AI CLI実行時のHTTP/HTTPSプロキシURL (例: http://proxy.company.com:8080)
+    cliNoProxy?: string;                    // AI CLI実行時のプロキシバイパスホスト (例: localhost,127.0.0.1,.company.internal)
 }
 
 export const DEFAULT_SETTINGS: AINotebookSettings = {
@@ -425,7 +432,9 @@ export const DEFAULT_SETTINGS: AINotebookSettings = {
     gitlabUploadsEnabled: true,
     userName: '',
     confluenceServers: [],
-    defaultConfluenceServerId: ''
+    defaultConfluenceServerId: '',
+    cliProxyUrl: '',
+    cliNoProxy: ''
 };
 
 

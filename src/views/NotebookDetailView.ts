@@ -1655,6 +1655,8 @@ export class AINotebookDetailView extends ItemView {
                 boundMmChannels: this.metadata?.boundMmChannels || [],
                 confluenceConfig: this.plugin.confluenceService?.getServer(),
                 userHintsPath: path.join(vaultBasePath, this.plugin.settings.rootDir, 'users', this.plugin.notebookManager.getEffectiveUsername(), 'HINTS.md'),
+                cliProxyUrl: this.plugin.settings.cliProxyUrl,
+                cliNoProxy: this.plugin.settings.cliNoProxy,
                 // 対話履歴はテキストで再注入せず、CLI 側のセッションを --resume で引き継ぐ
                 agentSessionId: this.currentSession.agentSessionId,
                 resumeSession: !!this.currentSession.agentSessionId,

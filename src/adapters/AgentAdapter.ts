@@ -21,6 +21,8 @@ export interface AgentOptions {
     userHintsPath?: string;                  // ユーザー共通 HINTS.md の絶対パス
     onStdoutChunk?: (chunk: string) => void; // ストリーミング用コールバック
     abortSignal?: AbortSignal;               // キャンセル用シグナル
+    cliProxyUrl?: string;                    // AI CLI 実行時のプロキシURL
+    cliNoProxy?: string;                     // AI CLI 実行時のプロキシ除外ホスト
 
     /** CLI 会話セッションID (UUID)。プラグイン側で採番する */
     agentSessionId?: string;
@@ -57,9 +59,9 @@ export interface AIAgentAdapter {
 }
 
 /**
- * 拡張 PATH 環境変数を生成（Mac / Windows 両対応）
+ * 拡張 PATH 環境変数およびプロキシ変数を生成（Mac / Windows 両対応）
  */
-export function getExtendedEnv(): NodeJS.ProcessEnv {
+export function getExtendedEnv(options?: { cliProxyUrl?: string; cliNoProxy?: string }): NodeJS.ProcessEnv {
     const home = os.homedir();
     const isWin = process.platform === 'win32';
     const extraPaths = isWin
@@ -83,10 +85,26 @@ export function getExtendedEnv(): NodeJS.ProcessEnv {
     const combinedPath = extraPaths.concat(currentPath.split(path.delimiter)).filter(Boolean);
     const uniquePath = Array.from(new Set(combinedPath)).join(path.delimiter);
 
-    return {
+    const env: NodeJS.ProcessEnv = {
         ...process.env,
         PATH: uniquePath
     };
+
+    if (options?.cliProxyUrl?.trim()) {
+        const proxy = options.cliProxyUrl.trim();
+        env.HTTP_PROXY = proxy;
+        env.HTTPS_PROXY = proxy;
+        env.http_proxy = proxy;
+        env.https_proxy = proxy;
+    }
+
+    if (options?.cliNoProxy?.trim()) {
+        const noProxy = options.cliNoProxy.trim();
+        env.NO_PROXY = noProxy;
+        env.no_proxy = noProxy;
+    }
+
+    return env;
 }
 
 /**

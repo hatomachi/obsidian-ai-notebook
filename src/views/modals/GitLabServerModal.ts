@@ -12,6 +12,8 @@ export class GitLabServerModal extends Modal {
     private token: string = '';
     private defaultProjectId: string = '';
     private defaultBranch: string = 'main';
+    private connectionMode: 'default' | 'direct' = 'direct';
+    private insecureSsl: boolean = false;
 
     constructor(
         app: App,
@@ -30,6 +32,8 @@ export class GitLabServerModal extends Modal {
             this.token = server.token;
             this.defaultProjectId = server.defaultProjectId || '';
             this.defaultBranch = server.defaultBranch || 'main';
+            this.connectionMode = server.connectionMode || 'direct';
+            this.insecureSsl = server.insecureSsl || false;
         }
     }
 
@@ -106,6 +110,29 @@ export class GitLabServerModal extends Modal {
             this.defaultBranch = branchInput.value.trim() || 'main';
         };
 
+        // 🛡️ 接続モード（ダイレクト通信 / システムプロキシ）
+        const modeGroup = contentEl.createDiv({ cls: 'ai-notebook-form-group' });
+        modeGroup.createEl('label', { text: '接続モード (Proxy Mode)' });
+        modeGroup.createEl('small', { text: '「ダイレクト通信」は Node.js ネイティブ通信で OS の PAC ファイル・プロキシ設定を完全バイパスします（社内イントラ GitLab 推奨）。', cls: 'ai-notebook-field-desc' });
+        const modeSelect = modeGroup.createEl('select', { cls: 'dropdown' });
+        const optDirect = modeSelect.createEl('option', { value: 'direct', text: '⚡ ダイレクト通信 (PAC・プロキシをバイパス) [推奨]' });
+        const optDefault = modeSelect.createEl('option', { value: 'default', text: '🌐 Obsidian 標準 (システムプロキシ・PAC経由)' });
+        modeSelect.value = this.connectionMode;
+        modeSelect.onchange = () => {
+            this.connectionMode = modeSelect.value as 'direct' | 'default';
+        };
+
+        // 🔒 自己署名・社内CA証明書の検証スキップ
+        const sslGroup = contentEl.createDiv({ cls: 'ai-notebook-form-group ai-notebook-checkbox-group' });
+        const sslLabel = sslGroup.createEl('label', { cls: 'ai-notebook-checkbox-label' });
+        const sslCheckbox = sslLabel.createEl('input', { type: 'checkbox' });
+        sslCheckbox.checked = this.insecureSsl;
+        sslCheckbox.onchange = () => {
+            this.insecureSsl = sslCheckbox.checked;
+        };
+        sslLabel.createSpan({ text: ' 🔓 自己署名・社内SSL証明書を許可 (Insecure SSL)' });
+        sslGroup.createEl('small', { text: '社内プライベートCAやオレオレ証明書環境で SSL ハンドシェイクエラーが出る場合に有効化してください。', cls: 'ai-notebook-field-desc' });
+
         // 接続テストセクション
         const testSection = contentEl.createDiv({ cls: 'ai-notebook-test-section' });
         const testBtn = testSection.createEl('button', {
@@ -131,7 +158,9 @@ export class GitLabServerModal extends Modal {
                 name: this.name || 'テストサーバー',
                 baseUrl: this.baseUrl,
                 token: this.token,
-                defaultProjectId: this.defaultProjectId
+                defaultProjectId: this.defaultProjectId,
+                connectionMode: this.connectionMode,
+                insecureSsl: this.insecureSsl
             };
 
             const res = await this.plugin.gitlabService.testConnection(tempConfig, this.defaultProjectId);
@@ -180,7 +209,9 @@ export class GitLabServerModal extends Modal {
             baseUrl: this.baseUrl.trim(),
             token: this.token.trim(),
             defaultProjectId: this.defaultProjectId.trim() || undefined,
-            defaultBranch: this.defaultBranch.trim() || 'main'
+            defaultBranch: this.defaultBranch.trim() || 'main',
+            connectionMode: this.connectionMode,
+            insecureSsl: this.insecureSsl
         };
 
         if (this.server) {
