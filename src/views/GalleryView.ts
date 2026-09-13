@@ -464,30 +464,31 @@ export class AINotebookGalleryView extends ItemView {
             card.createEl('p', { text: '説明なし', cls: 'ai-notebook-card-desc ai-notebook-card-desc-empty' });
         }
 
-        // 🏷️ タグチップス & 参照ノートブックバッジ
+        // 🏷️ 主要タグ（system / type）& 参照ノートブックバッジ
+        // ※ 一般タグはカード上の情報過多・文字潰れを防ぐためカードでは非表示とし、詳細画面または検索・フィルターで活用
         const badgesEl = card.createDiv({ cls: 'ai-notebook-card-badges' });
+        let badgeCount = 0;
 
         // 参照リンク数バッジ
         if (nb.linkedNotebookIds && nb.linkedNotebookIds.length > 0) {
             const linkBadge = badgesEl.createSpan({ cls: 'ai-notebook-tag-badge ai-notebook-tag-linked' });
             setIcon(linkBadge.createSpan({ cls: 'ai-notebook-tag-icon' }), 'link');
             linkBadge.createSpan({ text: `参照 ${nb.linkedNotebookIds.length}件` });
+            badgeCount++;
         }
 
-        // タグバッジ一覧（クリックでフィルター連動）
+        // 主要分類タグ（system/*, type/*）のみスマート表示（最大3件）
         if (nb.tags && nb.tags.length > 0) {
-            for (const tag of nb.tags) {
-                const parsed = parseTag(tag);
-                let badgeClass = 'ai-notebook-tag-chip ai-notebook-tag-general';
-                let badgePrefix = '#';
+            const majorTags = nb.tags
+                .map(tag => parseTag(tag))
+                .filter(parsed => parsed.isSystem || parsed.isType)
+                .slice(0, 3);
 
-                if (parsed.isSystem) {
-                    badgeClass = 'ai-notebook-tag-chip ai-notebook-tag-system';
-                    badgePrefix = '🏷️ ';
-                } else if (parsed.isType) {
-                    badgeClass = 'ai-notebook-tag-chip ai-notebook-tag-type';
-                    badgePrefix = '📄 ';
-                }
+            for (const parsed of majorTags) {
+                const badgeClass = parsed.isSystem
+                    ? 'ai-notebook-tag-chip ai-notebook-tag-system'
+                    : 'ai-notebook-tag-chip ai-notebook-tag-type';
+                const badgePrefix = parsed.isSystem ? '🏷️ ' : '📄 ';
 
                 const chip = badgesEl.createSpan({ cls: badgeClass });
                 chip.createSpan({ text: `${badgePrefix}${parsed.value}` });
@@ -499,16 +500,16 @@ export class AINotebookGalleryView extends ItemView {
                         this.filterSystem = this.filterSystem === parsed.value ? 'all' : parsed.value;
                     } else if (parsed.isType) {
                         this.filterType = this.filterType === parsed.value ? 'all' : parsed.value;
-                    } else {
-                        if (this.selectedTags.has(parsed.value)) {
-                            this.selectedTags.delete(parsed.value);
-                        } else {
-                            this.selectedTags.add(parsed.value);
-                        }
                     }
                     this.render();
                 };
+                badgeCount++;
             }
+        }
+
+        // バッジが1件もない場合はDOMから削除して余白をすっきり保つ
+        if (badgeCount === 0) {
+            badgesEl.remove();
         }
 
         // フッター (更新日時)

@@ -1,5 +1,6 @@
 import { NotebookMetadata } from '../../types';
 import { div, el, span, button, empty } from '../utils/dom';
+import { parseTag } from '../../utils/tagUtils';
 
 export interface GalleryViewProps {
     notebooks: NotebookMetadata[];
@@ -102,11 +103,19 @@ export class GalleryView {
                 el('p', { text: nb.description, cls: 'ai-notebook-card-desc' }, card);
             }
 
-            // Tags
+            // Tags (major classification tags only)
             if (nb.tags && nb.tags.length > 0) {
-                const tagsWrapper = div({ cls: 'ai-notebook-card-tags' }, card);
-                for (const tag of nb.tags) {
-                    span({ text: `#${tag}`, cls: 'ai-notebook-card-tag' }, tagsWrapper);
+                const majorTags = nb.tags
+                    .map((tag) => parseTag(tag))
+                    .filter((p) => p.isSystem || p.isType)
+                    .slice(0, 3);
+
+                if (majorTags.length > 0) {
+                    const tagsWrapper = div({ cls: 'ai-notebook-card-tags' }, card);
+                    for (const p of majorTags) {
+                        const prefix = p.isSystem ? '🏷️ ' : '📄 ';
+                        span({ text: `${prefix}${p.value}`, cls: 'ai-notebook-card-tag' }, tagsWrapper);
+                    }
                 }
             }
 

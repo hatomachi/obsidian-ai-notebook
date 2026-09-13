@@ -286,8 +286,9 @@
 .ai-notebook-card {
     display: flex;
     flex-direction: column;
-    height: 200px;
-    padding: 20px;
+    min-height: 200px;
+    height: 205px;
+    padding: 16px 18px;
     border-radius: 14px;
     background-color: var(--background-secondary);
     border: 1px solid var(--background-modifier-border);
@@ -295,6 +296,7 @@
     transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     position: relative;
     overflow: hidden;
+    box-sizing: border-box;
 }
 
 .ai-notebook-card:hover {
@@ -307,7 +309,8 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
+    flex-shrink: 0;
 }
 
 .ai-notebook-card-icon {
@@ -342,25 +345,30 @@
 }
 
 .ai-notebook-card-title {
-    margin: 0 0 8px 0;
-    font-size: 1.15rem;
+    margin: 0 0 6px 0;
+    font-size: 1.05rem;
     font-weight: 600;
     color: var(--text-normal);
-    line-height: 1.3;
+    line-height: 1.35;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    flex-shrink: 0;
 }
 
 .ai-notebook-card-desc {
-    margin: 0 0 auto 0;
-    font-size: 0.88rem;
+    margin: 0 0 8px 0;
+    font-size: 0.84rem;
     color: var(--text-muted);
     line-height: 1.4;
     display: -webkit-box;
-    -webkit-line-clamp: 3;
+    -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
+    text-overflow: ellipsis;
+    max-height: 2.8em;
+    flex-shrink: 0;
+    word-break: break-word;
 }
 
 .ai-notebook-card-desc-empty {
@@ -372,10 +380,12 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding-top: 12px;
+    margin-top: auto;
+    padding-top: 8px;
     border-top: 1px solid var(--background-modifier-border);
-    font-size: 0.8rem;
+    font-size: 0.78rem;
     color: var(--text-faint);
+    flex-shrink: 0;
 }
 
 /* New Card Button */
@@ -1125,9 +1135,14 @@
 .ai-notebook-card-badges {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 6px;
-    margin-top: auto;
-    margin-bottom: 8px;
+    margin: 0 0 8px 0;
+    flex-shrink: 0;
+}
+
+.ai-notebook-card-badges:empty {
+    display: none;
 }
 
 .ai-notebook-btn-xs {
