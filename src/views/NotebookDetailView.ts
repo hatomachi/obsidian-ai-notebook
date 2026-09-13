@@ -13,6 +13,7 @@ import { ConfluenceSearchModal } from './modals/ConfluenceSearchModal';
 import { BoundFolderReader } from '../services/BoundFolderReader';
 import { AgentFactory } from '../adapters/AgentFactory';
 import { DebugFolderHelper } from '../utils/debugFolderHelper';
+import { parseTag } from '../utils/tagUtils';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -230,6 +231,73 @@ export class AINotebookDetailView extends ItemView {
         setIcon(agentBadge, 'bot');
         const agentName = this.plugin.settings.activeAgent === 'antigravity' ? 'Antigravity CLI' : 'Claude Code CLI';
         agentBadge.createSpan({ text: ` ${agentName}` });
+
+        // 🏷️ ノートブックのタグ表示 & インライン編集バー
+        const tagsBar = container.createDiv({ cls: 'ai-notebook-detail-tags-bar' });
+        const tagsLabel = tagsBar.createSpan({ cls: 'ai-notebook-detail-tags-label' });
+        setIcon(tagsLabel, 'tag');
+
+        const currentTags = this.metadata.tags || [];
+        if (currentTags.length === 0 && !isMine) {
+            tagsBar.createSpan({ text: 'タグなし', cls: 'ai-notebook-detail-tags-empty' });
+        }
+
+        for (const tag of currentTags) {
+            const parsed = parseTag(tag);
+            let badgeCls = 'ai-notebook-tag-chip ai-notebook-tag-general';
+            let prefix = '#';
+            if (parsed.isSystem) {
+                badgeCls = 'ai-notebook-tag-chip ai-notebook-tag-system';
+                prefix = '🏷️ ';
+            } else if (parsed.isType) {
+                badgeCls = 'ai-notebook-tag-chip ai-notebook-tag-type';
+                prefix = '📄 ';
+            }
+
+            const chip = tagsBar.createSpan({ cls: badgeCls });
+            chip.createSpan({ text: `${prefix}${parsed.value}` });
+
+            if (isMine) {
+                const delBtn = chip.createSpan({ cls: 'ai-notebook-tag-chip-del', text: '✕' });
+                delBtn.setAttribute('title', `タグ「${tag}」を削除`);
+                delBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    if (!this.notebookId || !this.metadata) return;
+                    const newTags = (this.metadata.tags || []).filter(t => t !== tag);
+                    await this.plugin.notebookManager.updateNotebookMetadata(this.notebookId, { tags: newTags });
+                    new Notice(`タグ「${tag}」を削除しました`);
+                    await this.refresh(true);
+                };
+            }
+        }
+
+        if (isMine) {
+            const addTagBtn = tagsBar.createEl('button', {
+                cls: 'ai-notebook-btn-add-tag',
+                text: '+ タグ追加'
+            });
+            addTagBtn.onclick = () => {
+                new TextInputModal(
+                    this.app,
+                    '🏷️ タグの追加',
+                    '',
+                    async (val) => {
+                        if (!this.notebookId || !this.metadata) return;
+                        const toAdd = val.split(',').map(s => s.trim().replace(/^#+/, '')).filter(Boolean);
+                        if (toAdd.length === 0) return;
+                        const existing = new Set(this.metadata.tags || []);
+                        for (const t of toAdd) existing.add(t);
+                        await this.plugin.notebookManager.updateNotebookMetadata(this.notebookId, { tags: Array.from(existing) });
+                        new Notice(`タグを追加しました: ${toAdd.join(', ')}`);
+                        await this.refresh(true);
+                    },
+                    {
+                        placeholder: '例: system/apigw, type/estimate',
+                        description: 'カンマ区切りで複数入力可能（system/*: システム別、type/*: 種別別）'
+                    }
+                ).open();
+            };
+        }
 
         // ☁️ クラウド閲覧モード注意喚起バナー
         if (isRemote) {

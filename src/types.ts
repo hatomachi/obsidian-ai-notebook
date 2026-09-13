@@ -16,6 +16,16 @@ export interface DocumentTemplate {
     content?: string;
 }
 
+export type GalleryGroupingMode = 'none' | 'system' | 'type';
+
+export interface TagInfo {
+    raw: string;
+    prefix?: 'system' | 'type' | string;
+    value: string;
+    isSystem: boolean;
+    isType: boolean;
+}
+
 export interface NotebookMetadata {
     id: string;
     title: string;

@@ -1,6 +1,7 @@
 import { App, Modal, Setting, Notice, setIcon } from 'obsidian';
 import { NotebookManager } from '../../services/NotebookManager';
 import { NotebookMetadata } from '../../types';
+import { extractUniqueSystems, extractUniqueTypes, parseTag } from '../../utils/tagUtils';
 
 export class CreateNotebookModal extends Modal {
     notebookManager: NotebookManager;
@@ -8,6 +9,7 @@ export class CreateNotebookModal extends Modal {
 
     title: string = '';
     description: string = '';
+    tagsInput: string = '';
     boundFolderPath: string = '';
     selectedLinkedIds: Set<string> = new Set();
 
@@ -38,6 +40,50 @@ export class CreateNotebookModal extends Modal {
                 .setPlaceholder('例: リリース背景、変更点、切り戻し基準をまとめる')
                 .onChange(val => this.description = val));
 
+        // 🏷️ タグ設定（任意）
+        const allNotebooks = await this.notebookManager.getAllNotebooks();
+        const existingSystems = extractUniqueSystems(allNotebooks);
+        const existingTypes = extractUniqueTypes(allNotebooks);
+
+        let tagTextComponent: any = null;
+        const tagSetting = new Setting(contentEl)
+            .setName('🏷️ タグ (任意)')
+            .setDesc('分類用のタグをカンマ区切りで入力（例: system/apigw, type/release-plan）')
+            .addText(text => {
+                tagTextComponent = text;
+                text.setPlaceholder('例: system/apigw, type/release-plan, 2026')
+                    .onChange(val => this.tagsInput = val);
+            });
+
+        // 既存タグのサジェストチップス
+        if (existingSystems.length > 0 || existingTypes.length > 0) {
+            const suggestWrap = contentEl.createDiv({ cls: 'ai-notebook-create-tag-suggestions' });
+            suggestWrap.createSpan({ text: '候補から追加: ', cls: 'ai-notebook-tag-suggest-label' });
+
+            const addTagToInput = (tagToAdd: string) => {
+                const current = this.tagsInput.split(',').map(s => s.trim()).filter(Boolean);
+                if (!current.includes(tagToAdd)) {
+                    current.push(tagToAdd);
+                    this.tagsInput = current.join(', ');
+                    if (tagTextComponent) {
+                        tagTextComponent.setValue(this.tagsInput);
+                    }
+                }
+            };
+
+            for (const sys of existingSystems) {
+                const chip = suggestWrap.createSpan({ cls: 'ai-notebook-tag-chip is-xs ai-notebook-tag-system' });
+                chip.createSpan({ text: `+ system/${sys}` });
+                chip.onclick = () => addTagToInput(`system/${sys}`);
+            }
+
+            for (const t of existingTypes) {
+                const chip = suggestWrap.createSpan({ cls: 'ai-notebook-tag-chip is-xs ai-notebook-tag-type' });
+                chip.createSpan({ text: `+ type/${t}` });
+                chip.onclick = () => addTagToInput(`type/${t}`);
+            }
+        }
+
         // 外部バインドフォルダの設定 (任意)
         const defaultShared = this.notebookManager.settings.sharedFolderBasePath || '';
         new Setting(contentEl)
@@ -48,7 +94,6 @@ export class CreateNotebookModal extends Modal {
                 .onChange(val => this.boundFolderPath = val));
 
         // 参照コンテキスト (Linked Notebooks) の選択
-        const allNotebooks = await this.notebookManager.getAllNotebooks();
         if (allNotebooks.length > 0) {
             const contextSection = contentEl.createDiv({ cls: 'ai-notebook-create-context-section' });
             contextSection.createEl('h4', { text: '🔗 参照コンテキスト（他ノートブックを接続）' });
@@ -92,12 +137,21 @@ export class CreateNotebookModal extends Modal {
                         return;
                     }
 
+                    // カンマ区切りのタグを配列化
+                    const parsedTags = this.tagsInput
+                        .split(',')
+                        .map(s => s.trim().replace(/^#+/, ''))
+                        .filter(Boolean);
+
                     try {
                         const notebook = await this.notebookManager.createNotebook(
                             this.title,
                             this.description,
                             Array.from(this.selectedLinkedIds),
-                            this.boundFolderPath.trim() || undefined
+                            this.boundFolderPath.trim() || undefined,
+                            undefined,
+                            undefined,
+                            parsedTags
                         );
                         new Notice(`ノートブック "${notebook.title}" を作成しました`);
                         this.onCreated(notebook);

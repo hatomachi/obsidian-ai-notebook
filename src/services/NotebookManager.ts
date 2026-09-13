@@ -314,7 +314,7 @@ export class NotebookManager {
                 title: '📘 APIGW システム仕様・クセ',
                 created_at: now,
                 updated_at: now,
-                tags: ['system', 'apigw', 'architecture', 'knowledge'],
+                tags: ['system/apigw', 'type/architecture', 'knowledge', 'sample'],
                 icon: 'cpu',
                 description: 'KongベースのAPI Gateway仕様、トラブル教訓、運用上の注意点まとめ',
                 linked_notebook_ids: []
@@ -371,7 +371,7 @@ export class NotebookManager {
                 title: '📋 リリース計画書 デザイン仕様',
                 created_at: now,
                 updated_at: now,
-                tags: ['template', 'release', 'standard', 'rules'],
+                tags: ['type/release-plan', 'template', 'rules'],
                 icon: 'file-text',
                 description: '本番リリース計画書の標準章立てルールおよび高品質な記述サンプル (few-shot)',
                 linked_notebook_ids: []
@@ -474,7 +474,7 @@ export class NotebookManager {
                 title: '📘 案件見積基準・過去実績ナレッジ',
                 created_at: now,
                 updated_at: now,
-                tags: ['estimate', 'pricing', 'knowledge', 'sample'],
+                tags: ['system/common', 'type/estimate', 'pricing', 'sample'],
                 icon: 'calculator',
                 description: '過去の案件見積書・提案書（Excel/PPTX）から抽出・構造化した工数基準・単価マスター・リスク係数ナレッジ',
                 linked_notebook_ids: []
@@ -567,7 +567,8 @@ export class NotebookManager {
         linkedNotebookIds: string[] = [],
         boundFolderPath?: string,
         systemId?: string,
-        templateId?: string
+        templateId?: string,
+        tags: string[] = []
     ): Promise<NotebookMetadata> {
         await this.ensureBaseDirectories();
         const id = this.generateNotebookId();
@@ -579,7 +580,7 @@ export class NotebookManager {
             title: title.trim() || '無題のノートブック',
             createdAt: now,
             updatedAt: now,
-            tags: [],
+            tags: tags || [],
             icon: 'book-open',
             description: description.trim(),
             userName: currentUser,

@@ -1,6 +1,12 @@
 import { App, Modal, Setting, setIcon } from 'obsidian';
 import { NotebookMetadata } from '../../types';
 import { NotebookManager } from '../../services/NotebookManager';
+import {
+    parseTag,
+    extractUniqueSystems,
+    extractUniqueTypes,
+    filterNotebooks
+} from '../../utils/tagUtils';
 
 export class LinkNotebookModal extends Modal {
     notebookManager: NotebookManager;
@@ -11,6 +17,8 @@ export class LinkNotebookModal extends Modal {
     private currentlyLinkedIds: Set<string>;
     private selectedIds: Set<string>;
     private searchQuery: string = '';
+    private filterSystem: string = 'all';
+    private filterType: string = 'all';
 
     constructor(
         app: App,
@@ -50,16 +58,49 @@ export class LinkNotebookModal extends Modal {
             cls: 'ai-notebook-modal-desc'
         });
 
-        // 検索バー
-        const searchContainer = contentEl.createDiv({ cls: 'ai-notebook-search-container' });
+        // 検索 ＆ ファセットフィルターバー
+        const controlsContainer = contentEl.createDiv({ cls: 'ai-notebook-link-modal-controls' });
+
+        const searchContainer = controlsContainer.createDiv({ cls: 'ai-notebook-search-container' });
         const searchInput = searchContainer.createEl('input', {
             type: 'text',
-            placeholder: 'ノートブックを検索...',
+            placeholder: 'ノートブックを検索 (タイトル・説明・タグ)...',
             cls: 'ai-notebook-search-input',
             value: this.searchQuery
         });
         searchInput.oninput = () => {
             this.searchQuery = searchInput.value.toLowerCase().trim();
+            this.renderList(listContainer);
+        };
+
+        // ファセットフィルター行（システム・種別）
+        const facetRow = controlsContainer.createDiv({ cls: 'ai-notebook-link-facets-row' });
+
+        const systems = extractUniqueSystems(this.allNotebooks);
+        const sysWrap = facetRow.createDiv({ cls: 'ai-notebook-facet-select-wrap' });
+        sysWrap.createSpan({ text: '🏷️ システム:', cls: 'ai-notebook-facet-label' });
+        const sysSelect = sysWrap.createEl('select', { cls: 'ai-notebook-facet-select' });
+        sysSelect.createEl('option', { value: 'all', text: 'すべて' });
+        for (const s of systems) {
+            const opt = sysSelect.createEl('option', { value: s, text: s });
+            if (s === this.filterSystem) opt.selected = true;
+        }
+        sysSelect.onchange = () => {
+            this.filterSystem = sysSelect.value;
+            this.renderList(listContainer);
+        };
+
+        const types = extractUniqueTypes(this.allNotebooks);
+        const typeWrap = facetRow.createDiv({ cls: 'ai-notebook-facet-select-wrap' });
+        typeWrap.createSpan({ text: '📄 種別:', cls: 'ai-notebook-facet-label' });
+        const typeSelect = typeWrap.createEl('select', { cls: 'ai-notebook-facet-select' });
+        typeSelect.createEl('option', { value: 'all', text: 'すべて' });
+        for (const t of types) {
+            const opt = typeSelect.createEl('option', { value: t, text: t });
+            if (t === this.filterType) opt.selected = true;
+        }
+        typeSelect.onchange = () => {
+            this.filterType = typeSelect.value;
             this.renderList(listContainer);
         };
 
@@ -85,11 +126,10 @@ export class LinkNotebookModal extends Modal {
     private renderList(container: HTMLElement): void {
         container.empty();
 
-        const filtered = this.allNotebooks.filter(nb => {
-            if (!this.searchQuery) return true;
-            return nb.title.toLowerCase().includes(this.searchQuery) ||
-                nb.description.toLowerCase().includes(this.searchQuery) ||
-                nb.tags.some(t => t.toLowerCase().includes(this.searchQuery));
+        const filtered = filterNotebooks(this.allNotebooks, {
+            searchQuery: this.searchQuery,
+            system: this.filterSystem,
+            type: this.filterType
         });
 
         if (filtered.length === 0) {
@@ -113,9 +153,38 @@ export class LinkNotebookModal extends Modal {
             setIcon(iconSpan, nb.icon || 'book-open');
 
             const textWrap = item.createDiv({ cls: 'ai-notebook-link-text-wrap' });
-            textWrap.createEl('h4', { text: nb.title, cls: 'ai-notebook-link-title' });
+            
+            // タイトル ＆ ユーザーバッジ
+            const titleRow = textWrap.createDiv({ cls: 'ai-notebook-link-title-row' });
+            titleRow.createEl('h4', { text: nb.title, cls: 'ai-notebook-link-title' });
+
+            if (nb.userName) {
+                const uBadge = titleRow.createSpan({ cls: 'ai-notebook-user-badge is-xs' });
+                setIcon(uBadge.createSpan({ cls: 'ai-notebook-user-icon' }), 'user');
+                uBadge.createSpan({ text: ` @${nb.userName}` });
+            }
+
             if (nb.description) {
                 textWrap.createEl('p', { text: nb.description, cls: 'ai-notebook-link-desc' });
+            }
+
+            // 🏷️ タグバッジ一覧
+            if (nb.tags && nb.tags.length > 0) {
+                const tagsRow = textWrap.createDiv({ cls: 'ai-notebook-link-tags-row' });
+                for (const tag of nb.tags) {
+                    const parsed = parseTag(tag);
+                    let badgeCls = 'ai-notebook-tag-chip is-xs ai-notebook-tag-general';
+                    let prefix = '#';
+                    if (parsed.isSystem) {
+                        badgeCls = 'ai-notebook-tag-chip is-xs ai-notebook-tag-system';
+                        prefix = '🏷️ ';
+                    } else if (parsed.isType) {
+                        badgeCls = 'ai-notebook-tag-chip is-xs ai-notebook-tag-type';
+                        prefix = '📄 ';
+                    }
+                    const chip = tagsRow.createSpan({ cls: badgeCls });
+                    chip.createSpan({ text: `${prefix}${parsed.value}` });
+                }
             }
 
             const toggle = () => {

@@ -2597,3 +2597,350 @@ img.ai-notebook-gitlab-error {
     text-align: center;
     color: var(--text-error);
 }
+
+/* ==========================================
+   Tag-based Organization & Facets (Gallery / Modals / Detail)
+   ========================================== */
+
+/* コントロールバー レイアウト */
+.ai-notebook-gallery-controls-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 16px;
+}
+
+.ai-notebook-gallery-facets-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    width: 100%;
+    flex-wrap: wrap;
+    padding-top: 8px;
+    border-top: 1px solid var(--background-modifier-border-focus, var(--background-modifier-border));
+}
+
+.ai-notebook-facet-select-wrap,
+.ai-notebook-facet-group-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.ai-notebook-facet-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.ai-notebook-facet-select {
+    padding: 4px 10px;
+    border-radius: 6px;
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    color: var(--text-normal);
+    font-size: 0.85rem;
+    outline: none;
+    cursor: pointer;
+}
+
+.ai-notebook-facet-select:focus {
+    border-color: var(--interactive-accent);
+}
+
+/* 適用中フィルター チップス */
+.ai-notebook-active-chips-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 12px;
+    background-color: var(--background-secondary-alt, var(--background-secondary));
+    border-radius: 6px;
+    font-size: 0.8rem;
+}
+
+.ai-notebook-active-chips-label {
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.ai-notebook-active-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.78rem;
+    font-weight: 500;
+}
+
+.ai-notebook-active-chip.is-system {
+    background-color: rgba(90, 160, 255, 0.15);
+    color: var(--interactive-accent);
+    border: 1px solid rgba(90, 160, 255, 0.35);
+}
+
+.ai-notebook-active-chip.is-type {
+    background-color: rgba(180, 100, 255, 0.15);
+    color: #a855f7;
+    border: 1px solid rgba(180, 100, 255, 0.35);
+}
+
+.ai-notebook-active-chip.is-general {
+    background-color: var(--background-modifier-form-field);
+    color: var(--text-normal);
+    border: 1px solid var(--background-modifier-border);
+}
+
+.ai-notebook-active-chip-close {
+    cursor: pointer;
+    font-size: 0.75rem;
+    margin-left: 2px;
+    opacity: 0.7;
+}
+
+.ai-notebook-active-chip-close:hover {
+    opacity: 1;
+    color: var(--text-error);
+}
+
+.ai-notebook-active-chips-clear {
+    margin-left: auto;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+.ai-notebook-active-chips-clear:hover {
+    color: var(--text-normal);
+}
+
+/* グリッド件数インフォ */
+.ai-notebook-grid-count-info {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+}
+
+/* タグチップ (カード / 一覧 / 詳細共通) */
+.ai-notebook-tag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-weight: 500;
+    transition: all 0.15s ease;
+    cursor: pointer;
+    line-height: 1.2;
+}
+
+.ai-notebook-tag-chip:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+.ai-notebook-tag-chip.is-xs {
+    font-size: 0.68rem;
+    padding: 1px 6px;
+}
+
+.ai-notebook-tag-chip.ai-notebook-tag-system {
+    background-color: rgba(90, 160, 255, 0.12);
+    color: var(--interactive-accent);
+    border: 1px solid rgba(90, 160, 255, 0.3);
+}
+
+.ai-notebook-tag-chip.ai-notebook-tag-system:hover {
+    background-color: rgba(90, 160, 255, 0.22);
+}
+
+.ai-notebook-tag-chip.ai-notebook-tag-type {
+    background-color: rgba(180, 100, 255, 0.12);
+    color: #a855f7;
+    border: 1px solid rgba(180, 100, 255, 0.3);
+}
+
+.ai-notebook-tag-chip.ai-notebook-tag-type:hover {
+    background-color: rgba(180, 100, 255, 0.22);
+}
+
+.ai-notebook-tag-chip.ai-notebook-tag-general {
+    background-color: var(--background-modifier-form-field);
+    color: var(--text-muted);
+    border: 1px solid var(--background-modifier-border);
+}
+
+.ai-notebook-tag-chip.ai-notebook-tag-general:hover {
+    background-color: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.ai-notebook-tag-chip-del {
+    margin-left: 4px;
+    font-size: 0.7rem;
+    opacity: 0.6;
+    cursor: pointer;
+}
+
+.ai-notebook-tag-chip-del:hover {
+    opacity: 1;
+    color: var(--text-error);
+}
+
+/* グルーピングセクション & アコーディオン */
+.ai-notebook-group-section {
+    margin-bottom: 24px;
+}
+
+.ai-notebook-group-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background-color: var(--background-secondary);
+    border-radius: 8px;
+    border: 1px solid var(--background-modifier-border);
+    cursor: pointer;
+    margin-bottom: 12px;
+    user-select: none;
+    transition: background-color 0.15s ease;
+}
+
+.ai-notebook-group-header:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+.ai-notebook-group-toggle-icon {
+    display: flex;
+    align-items: center;
+    color: var(--text-muted);
+}
+
+.ai-notebook-group-icon {
+    display: flex;
+    align-items: center;
+    color: var(--interactive-accent);
+}
+
+.ai-notebook-group-title {
+    font-weight: 700;
+    font-size: 1rem;
+    color: var(--text-normal);
+}
+
+.ai-notebook-group-count {
+    font-size: 0.75rem;
+    padding: 2px 7px;
+    border-radius: 10px;
+    background-color: var(--background-modifier-form-field);
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+.ai-notebook-group-top-action {
+    margin-bottom: 16px;
+}
+
+/* 詳細画面のタグバー */
+.ai-notebook-detail-tags-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 6px 16px;
+    background-color: var(--background-secondary);
+    border-bottom: 1px solid var(--background-modifier-border);
+    font-size: 0.85rem;
+}
+
+.ai-notebook-detail-tags-label {
+    display: flex;
+    align-items: center;
+    color: var(--text-muted);
+}
+
+.ai-notebook-detail-tags-empty {
+    font-size: 0.8rem;
+    color: var(--text-faint);
+    font-style: italic;
+}
+
+.ai-notebook-btn-add-tag {
+    background: transparent;
+    border: 1px dashed var(--background-modifier-border);
+    color: var(--text-muted);
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.ai-notebook-btn-add-tag:hover {
+    border-color: var(--interactive-accent);
+    color: var(--interactive-accent);
+    background-color: var(--background-modifier-hover);
+}
+
+/* 新規作成モーダルのタグサジェスト */
+.ai-notebook-create-tag-suggestions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: -8px;
+    margin-bottom: 16px;
+    padding: 6px 12px;
+    background-color: var(--background-secondary);
+    border-radius: 6px;
+    font-size: 0.78rem;
+}
+
+.ai-notebook-tag-suggest-label {
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+/* LinkNotebookModal のコントロール */
+.ai-notebook-link-modal-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 16px;
+}
+
+.ai-notebook-link-facets-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.ai-notebook-link-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ai-notebook-link-tags-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+}
+
+.ai-notebook-user-badge.is-xs {
+    font-size: 0.65rem;
+    padding: 1px 5px;
+}
+
