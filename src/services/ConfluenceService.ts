@@ -20,6 +20,26 @@ export function normalizeConfluenceBaseUrl(rawUrl: string): string {
 }
 
 /**
+ * Confluence WebUI URL を解決 (baseUrlのコンテキストパスとの重複防止・相対パス正規化)
+ */
+export function resolveConfluenceWebUrl(webuiPath: string, baseUrl: string): string {
+    if (!webuiPath) return '';
+    if (/^https?:\/\//i.test(webuiPath)) return webuiPath;
+    const cleanBase = normalizeConfluenceBaseUrl(baseUrl);
+    try {
+        const parsedBase = new URL(cleanBase);
+        const basePath = parsedBase.pathname.replace(/^\/|\/$/g, '');
+        let cleanPath = webuiPath.replace(/^\/+/, '');
+        if (basePath && (cleanPath === basePath || cleanPath.startsWith(basePath + '/'))) {
+            cleanPath = cleanPath.substring(basePath.length).replace(/^\/+/, '');
+        }
+        return `${cleanBase}/${cleanPath}`;
+    } catch {
+        return `${cleanBase}${webuiPath.startsWith('/') ? '' : '/'}${webuiPath}`;
+    }
+}
+
+/**
  * タイトルからファイル名用の安全なスラッグを生成
  */
 export function slugifyTitle(title: string): string {
@@ -217,10 +237,7 @@ export class ConfluenceService {
 
         const data = res.json;
         const results: ConfluencePageSummary[] = (data.results || []).map((item: any) => {
-            const webuiPath = item._links?.webui || '';
-            const webuiUrl = webuiPath.startsWith('http')
-                ? webuiPath
-                : `${baseUrl}${webuiPath.startsWith('/') ? '' : '/'}${webuiPath}`;
+            const webuiUrl = resolveConfluenceWebUrl(item._links?.webui || '', baseUrl);
 
             return {
                 id: item.id,
@@ -302,10 +319,7 @@ export class ConfluenceService {
         }
 
         const item = res.json;
-        const webuiPath = item._links?.webui || '';
-        const webuiUrl = webuiPath.startsWith('http')
-            ? webuiPath
-            : `${baseUrl}${webuiPath.startsWith('/') ? '' : '/'}${webuiPath}`;
+        const webuiUrl = resolveConfluenceWebUrl(item._links?.webui || '', baseUrl);
 
         const bodyStorage = item.body?.storage?.value || '';
         const bodyView = item.body?.view?.value || '';

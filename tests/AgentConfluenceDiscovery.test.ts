@@ -10,6 +10,17 @@ import { ConfluenceServerConfig } from '../src/types';
 
 const execAsync = promisify(exec);
 
+const testEnv = {
+    ...process.env,
+    http_proxy: '',
+    HTTP_PROXY: '',
+    https_proxy: '',
+    HTTPS_PROXY: '',
+    all_proxy: '',
+    ALL_PROXY: '',
+    no_proxy: '*'
+};
+
 async function runTests() {
     console.log('=== AgentConfluenceDiscovery (AI自律探索＆共通HINTS学習) 結合テスト開始 ===');
 
@@ -17,10 +28,12 @@ async function runTests() {
     const userRootDir = path.join(tempDir, 'users', 's-ikari');
     const nb1Dir = path.join(userRootDir, 'notebooks', 'nb-auth');
     const nb2Dir = path.join(userRootDir, 'notebooks', 'nb-other');
+    const nb3Dir = path.join(userRootDir, 'notebooks', 'nb-wiki-path');
     const userHintsPath = path.join(userRootDir, 'HINTS.md');
 
     fs.mkdirSync(nb1Dir, { recursive: true });
     fs.mkdirSync(nb2Dir, { recursive: true });
+    fs.mkdirSync(nb3Dir, { recursive: true });
 
     const simulator = new ConfluenceChaosSimulator();
     const port = await simulator.start(0);
@@ -65,7 +78,8 @@ async function runTests() {
         console.log('Step 2: CLI 探索 (node .tools/confluence.cjs search "認証") -> 全社ノイズ混在の確認');
         const { stdout: initialSearchOut } = await execAsync('node .tools/confluence.cjs search "認証"', {
             cwd: nb1Dir,
-            encoding: 'utf-8'
+            encoding: 'utf-8',
+            env: testEnv
         });
 
         assert(initialSearchOut.includes('Found'), '検索結果が出力されていません');
@@ -84,7 +98,7 @@ async function runTests() {
             '--guidance "全社検索は古い仕様が多い。2025年リニューアル配下を最優先すること。"'
         ].join(' ');
 
-        const { stdout: hintOut } = await execAsync(hintCmd, { cwd: nb1Dir, encoding: 'utf-8' });
+        const { stdout: hintOut } = await execAsync(hintCmd, { cwd: nb1Dir, encoding: 'utf-8', env: testEnv });
         assert(hintOut.includes('Successfully learned search hint'), '学習成功メッセージが出力されていません');
 
         // ユーザー共通 HINTS.md に保存されたか確認
@@ -98,7 +112,8 @@ async function runTests() {
         console.log('Step 4: 学習後の次回検索 (node .tools/confluence.cjs search "認証") -> 正解のみ抽出');
         const { stdout: optimizedSearchOut } = await execAsync('node .tools/confluence.cjs search "認証"', {
             cwd: nb1Dir,
-            encoding: 'utf-8'
+            encoding: 'utf-8',
+            env: testEnv
         });
 
         assert(optimizedSearchOut.includes('Applied Search Hint: "認証"'), 'HINTS適用メッセージが出力されていません');
@@ -111,7 +126,8 @@ async function runTests() {
         console.log('Step 5: CLI によるページ抽出 (node .tools/confluence.cjs extract 10004)');
         const { stdout: extractOut } = await execAsync('node .tools/confluence.cjs extract 10004', {
             cwd: nb1Dir,
-            encoding: 'utf-8'
+            encoding: 'utf-8',
+            env: testEnv
         });
 
         assert(extractOut.includes('Successfully extracted page [10004]'), '抽出成功メッセージが出力されていません');
@@ -143,13 +159,54 @@ async function runTests() {
         // nb2 から検索実行 -> ユーザー共通 HINTS.md が自動適用される！
         const { stdout: nb2SearchOut } = await execAsync('node .tools/confluence.cjs search "認証"', {
             cwd: nb2Dir,
-            encoding: 'utf-8'
+            encoding: 'utf-8',
+            env: testEnv
         });
 
         assert(nb2SearchOut.includes('Applied Search Hint: "認証"'), 'nb2 で知恵が適用されていません');
         assert(nb2SearchOut.includes('JWTトークン仕様書'), 'nb2 で正解がヒットしていません');
         assert(!nb2SearchOut.includes('PROD-OLD'), 'nb2 でノイズが混在しています');
         console.log('  -> OK: 別ノートブック (nb2) でも初回から探索の知恵が引き継がれ、正解のみヒットしました！');
+
+        // Step 7: コンテキストパス付き baseUrl (例: http://127.0.0.1:port/wiki) での先頭スラッシュ破棄防止検証
+        console.log('Step 7: サブパス付き baseUrl (例: /wiki) での URL 結合・先頭スラッシュ破棄防止検証');
+        const confluenceConfigWithSubpath: ConfluenceServerConfig = {
+            ...confluenceConfig,
+            id: 'mock-subpath-server',
+            baseUrl: `${mockBaseUrl}/wiki/` // 末尾スラッシュあり・サブパスあり
+        };
+
+        ensureNotebookProject({
+            notebookDir: nb3Dir,
+            sourcesDir: path.join(nb3Dir, 'sources'),
+            artifactsDir: path.join(nb3Dir, 'artifacts'),
+            notebookTitle: 'サブパスConfluenceノートブック',
+            confluenceConfig: confluenceConfigWithSubpath,
+            userHintsPath
+        });
+
+        // サブパス付き環境での検索実行（先頭 / の endpoint でも /wiki が削ぎ落とされないことの確認）
+        const { stdout: nb3SearchOut } = await execAsync('node .tools/confluence.cjs search "認証"', {
+            cwd: nb3Dir,
+            encoding: 'utf-8',
+            env: testEnv
+        });
+
+        assert(nb3SearchOut.includes('Found') || nb3SearchOut.includes('JWTトークン仕様書'), 'サブパス環境で検索結果が取得できていません');
+        assert(nb3SearchOut.includes('JWTトークン仕様書'), 'サブパス環境で正解がヒットしていません');
+        console.log('  -> OK: baseUrl にサブパス (/wiki) が含まれていても URL が正常に解決され検索成功');
+
+        // サブパス付き環境でのページ抽出実行
+        const { stdout: nb3ExtractOut } = await execAsync('node .tools/confluence.cjs extract 10004', {
+            cwd: nb3Dir,
+            encoding: 'utf-8',
+            env: testEnv
+        });
+
+        assert(nb3ExtractOut.includes('Successfully extracted page [10004]'), 'サブパス環境で抽出に失敗しました');
+        const nb3ExtractedFile = path.join(nb3Dir, 'sources', 'confluence_10004_JWTトークン仕様書.md');
+        assert(fs.existsSync(nb3ExtractedFile), 'nb3 で抽出ファイルが保存されていません');
+        console.log('  -> OK: サブパス環境でもページ抽出が完全に成功しました！');
 
     } finally {
         await simulator.stop();

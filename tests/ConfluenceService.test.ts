@@ -1,5 +1,5 @@
 import assert from 'assert';
-import { ConfluenceService } from '../src/services/ConfluenceService';
+import { ConfluenceService, resolveConfluenceWebUrl, normalizeConfluenceBaseUrl } from '../src/services/ConfluenceService';
 import { confluenceHtmlToMarkdown } from '../src/services/confluence/ConfluenceHtmlToMarkdown';
 import { ConfluenceChaosSimulator } from '../tools/confluence-mock-server';
 import { AINotebookSettings, DEFAULT_SETTINGS } from '../src/types';
@@ -143,6 +143,44 @@ console.log(x);]]></ac:plain-text-body>
     } finally {
         await simulator.stop();
     }
+
+    // Test 4: resolveConfluenceWebUrl と normalizeConfluenceBaseUrl の検証
+    console.log('Test 4: resolveConfluenceWebUrl / normalizeConfluenceBaseUrl の URL 解決検証');
+    assert.strictEqual(normalizeConfluenceBaseUrl('https://example.com/wiki/'), 'https://example.com/wiki');
+    assert.strictEqual(normalizeConfluenceBaseUrl('  https://example.com/  '), 'https://example.com');
+
+    // 通常のルート
+    assert.strictEqual(
+        resolveConfluenceWebUrl('/spaces/DEV/pages/10001', 'https://example.com'),
+        'https://example.com/spaces/DEV/pages/10001'
+    );
+    assert.strictEqual(
+        resolveConfluenceWebUrl('spaces/DEV/pages/10001', 'https://example.com/'),
+        'https://example.com/spaces/DEV/pages/10001'
+    );
+
+    // サブパス (/wiki) が baseUrl にある場合
+    assert.strictEqual(
+        resolveConfluenceWebUrl('/spaces/DEV/pages/10001', 'https://example.com/wiki'),
+        'https://example.com/wiki/spaces/DEV/pages/10001'
+    );
+    assert.strictEqual(
+        resolveConfluenceWebUrl('/spaces/DEV/pages/10001', 'https://example.com/wiki/'),
+        'https://example.com/wiki/spaces/DEV/pages/10001'
+    );
+
+    // webuiPath に既に /wiki が含まれている場合の二重プレフィックス防止
+    assert.strictEqual(
+        resolveConfluenceWebUrl('/wiki/spaces/DEV/pages/10001', 'https://example.com/wiki'),
+        'https://example.com/wiki/spaces/DEV/pages/10001'
+    );
+
+    // 絶対URLの場合
+    assert.strictEqual(
+        resolveConfluenceWebUrl('https://custom-domain.com/pages/1', 'https://example.com/wiki'),
+        'https://custom-domain.com/pages/1'
+    );
+    console.log('  -> OK: resolveConfluenceWebUrl の全ケース合格 (サブパス保持・二重防止・絶対URL)');
 
     console.log('=== 全 ConfluenceService 単体テストに合格しました (All tests passed) ===\n');
 }

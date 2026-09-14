@@ -30,10 +30,24 @@ function checkConfig() {
     }
 }
 
+// URL 結合ヘルパー（baseUrl のパスプレフィックスを維持し、先頭スラッシュによる破棄を防止）
+function resolveConfluenceUrl(endpoint, baseUrl) {
+    if (!endpoint) return new url.URL(baseUrl);
+    if (/^https?:\\/\\//i.test(endpoint)) return new url.URL(endpoint);
+    const base = baseUrl.replace(/\\/+$/, '') + '/';
+    const parsedBase = new url.URL(base);
+    const basePath = parsedBase.pathname.replace(/^\\/|\\/$/g, '');
+    let relative = endpoint.replace(/^\\/+/, '');
+    if (basePath && (relative === basePath || relative.startsWith(basePath + '/'))) {
+        relative = relative.substring(basePath.length).replace(/^\\/+/, '');
+    }
+    return new url.URL(relative, base);
+}
+
 // 2. HTTP / REST API リクエスト関数
 function apiRequest(endpoint) {
     return new Promise((resolve, reject) => {
-        const fullUrl = new url.URL(endpoint, config.baseUrl);
+        const fullUrl = resolveConfluenceUrl(endpoint, config.baseUrl);
         const isHttps = fullUrl.protocol === 'https:';
         const client = isHttps ? https : http;
 
@@ -301,7 +315,7 @@ async function cmdSearch(query) {
             const spaceKey = page.space ? page.space.key : 'UNKNOWN';
             const updated = page.version && page.version.when ? page.version.when.substring(0, 10) : 'Unknown';
             const ancestors = (page.ancestors || []).map(a => a.title).join(' / ');
-            const webUrl = page._links && page._links.webui ? new url.URL(page._links.webui, config.baseUrl).toString() : '';
+            const webUrl = page._links && page._links.webui ? resolveConfluenceUrl(page._links.webui, config.baseUrl).toString() : '';
 
             console.log(\`- [ID: \${page.id}] "\${page.title}"\`);
             console.log(\`  Space: \${spaceKey} | Updated: \${updated}\`);
@@ -334,7 +348,7 @@ async function cmdExtract(pageId) {
         const title = page.title || \`page_\${pageId}\`;
         const spaceKey = page.space ? page.space.key : '';
         const updated = page.version && page.version.when ? page.version.when : '';
-        const webUrl = page._links && page._links.webui ? new url.URL(page._links.webui, config.baseUrl).toString() : '';
+        const webUrl = page._links && page._links.webui ? resolveConfluenceUrl(page._links.webui, config.baseUrl).toString() : '';
         const rawBody = page.body && page.body.storage ? page.body.storage.value : '';
 
         const mdBody = htmlToMarkdown(rawBody);
