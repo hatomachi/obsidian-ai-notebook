@@ -15,6 +15,12 @@ import { BoundFolderReader } from '../services/BoundFolderReader';
 import { AgentFactory } from '../adapters/AgentFactory';
 import { DebugFolderHelper } from '../utils/debugFolderHelper';
 import { parseTag } from '../utils/tagUtils';
+import {
+    generatePastedImageName,
+    generatePastedTextName,
+    isInputElement,
+    getPasteShortcutLabel
+} from '../utils/clipboardUtils';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -70,6 +76,12 @@ export class AINotebookDetailView extends ItemView {
         this.onSendMessageHandler = async (prompt: string) => {
             await this.handleSendMessage(prompt);
         };
+
+        // クリップボード ペースト (Ctrl+V / Cmd+V) イベントリスナーを安全に登録
+        this.registerDomEvent(this.containerEl, 'paste', async (e: ClipboardEvent) => {
+            await this.handlePaste(e);
+        });
+
         await this.refresh();
     }
 
@@ -460,6 +472,15 @@ export class AINotebookDetailView extends ItemView {
             });
 
             menu.addItem(item => {
+                const shortcut = getPasteShortcutLabel();
+                item.setTitle(`📋 クリップボードから貼り付け (${shortcut})`)
+                    .setIcon('clipboard-paste')
+                    .onClick(async () => {
+                        await this.handlePasteFromClipboardMenu();
+                    });
+            });
+
+            menu.addItem(item => {
                 item.setTitle('🔗 参照ノートブック (Linked Context)')
                     .setIcon('link')
                     .onClick(() => {
@@ -545,10 +566,11 @@ export class AINotebookDetailView extends ItemView {
         const contentArea = panel.createDiv({ cls: 'ai-notebook-sources-content-area' });
 
         // スリムクイック D&D バー
+        const shortcut = getPasteShortcutLabel();
         const slimDrop = contentArea.createDiv({ cls: 'ai-notebook-slim-dropzone' });
         const slimDropIcon = slimDrop.createSpan({ cls: 'ai-notebook-slim-dropzone-icon' });
         setIcon(slimDropIcon, 'upload-cloud');
-        slimDrop.createSpan({ text: 'ファイルをドロップ または 選択', cls: 'ai-notebook-slim-dropzone-label' });
+        slimDrop.createSpan({ text: `ファイルをドロップ または 選択 (${shortcut}で貼付)`, cls: 'ai-notebook-slim-dropzone-label' });
         slimDrop.onclick = () => fileInput.click();
 
         // D&D イベントハンドラー（スリムバー ＆ パネル全体）
@@ -598,7 +620,7 @@ export class AINotebookDetailView extends ItemView {
             setIcon(emptyIcon, 'inbox');
             emptyGuide.createDiv({ text: 'ソースがまだありません', cls: 'ai-notebook-sources-empty-title' });
             emptyGuide.createDiv({ 
-                text: '上の「＋ 追加」またはファイルをドロップして、AIと対話を開始しましょう', 
+                text: `上の「＋ 追加」またはファイルドロップ、${shortcut}でクリップボードから貼り付けてAIと対話を開始しましょう`, 
                 cls: 'ai-notebook-sources-empty-desc' 
             });
             return;
@@ -1129,7 +1151,7 @@ export class AINotebookDetailView extends ItemView {
     /**
      * ファイル投入の処理ハンドラー（パイプライン切り分けログ・レース状態対策・0バイトガード・結果可視化）
      */
-    private async handleFilesAdded(files: FileList, subfolder?: string): Promise<void> {
+    private async handleFilesAdded(files: FileList | File[], subfolder?: string): Promise<void> {
         if (!this.notebookId || this.isProcessingFiles) return;
         this.isProcessingFiles = true;
 
@@ -1274,6 +1296,170 @@ export class AINotebookDetailView extends ItemView {
         } finally {
             this.isProcessingFiles = false;
         }
+    }
+
+    /**
+     * クリップボードからの直接貼付 (Ctrl+V / Cmd+V) ハンドラー
+     * 画像（スクショ）やファイル、テキストを即座にソースへ投入
+     */
+    private async handlePaste(e: ClipboardEvent): Promise<void> {
+        if (!this.notebookId || this.metadata?.isRemote || this.isProcessingFiles) return;
+
+        const clipboardData = e.clipboardData;
+        if (!clipboardData) return;
+
+        const activeEl = document.activeElement as HTMLElement | null;
+        const isInput = isInputElement(activeEl);
+        const isChatArea = !!activeEl?.classList.contains('ai-notebook-chat-textarea');
+
+        // 1. ファイル（画像・ドキュメント）の抽出
+        const rawFiles: File[] = [];
+        if (clipboardData.files && clipboardData.files.length > 0) {
+            for (let i = 0; i < clipboardData.files.length; i++) {
+                rawFiles.push(clipboardData.files[i]);
+            }
+        } else if (clipboardData.items && clipboardData.items.length > 0) {
+            for (let i = 0; i < clipboardData.items.length; i++) {
+                const item = clipboardData.items[i];
+                if (item.kind === 'file') {
+                    const file = item.getAsFile();
+                    if (file) rawFiles.push(file);
+                }
+            }
+        }
+
+        const targetSubfolder = this.activeDropSubfolder;
+
+        // A: 画像またはファイルが存在する場合
+        if (rawFiles.length > 0) {
+            // チャット欄フォーカス時も含め、画像をインターセプトしてソースに追加
+            e.preventDefault();
+            e.stopPropagation();
+
+            const existingFileNames = this.sources
+                .filter(s => targetSubfolder ? s.subfolder === targetSubfolder : !s.subfolder)
+                .map(s => s.name);
+
+            const processedFiles: File[] = [];
+            for (const file of rawFiles) {
+                let finalName = file.name;
+                const isGenericImageName = !finalName || finalName === 'image.png' || finalName === 'blob' || finalName === 'image';
+                if (file.type.startsWith('image/') && isGenericImageName) {
+                    const ext = file.type.split('/')[1] || 'png';
+                    finalName = generatePastedImageName(existingFileNames, new Date(), ext);
+                    existingFileNames.push(finalName);
+                    // 新しい File オブジェクトとしてリネーム
+                    const renamedFile = new File([file], finalName, { type: file.type });
+                    processedFiles.push(renamedFile);
+                } else {
+                    processedFiles.push(file);
+                }
+            }
+
+            if (isChatArea) {
+                new Notice('📸 クリップボードの画像をソースに追加中...', 3000);
+            }
+
+            await this.handleFilesAdded(processedFiles, targetSubfolder);
+            return;
+        }
+
+        // B: テキストの場合
+        const text = clipboardData.getData('text/plain') || clipboardData.getData('text');
+        if (text && text.trim()) {
+            // チャット欄や検索欄等の入力要素にフォーカスがある場合は通常のテキスト貼付を邪魔しない
+            if (isInput) {
+                return;
+            }
+
+            e.preventDefault();
+            e.stopPropagation();
+
+            const existingFileNames = this.sources
+                .filter(s => targetSubfolder ? s.subfolder === targetSubfolder : !s.subfolder)
+                .map(s => s.name);
+
+            const fileName = generatePastedTextName(text, existingFileNames);
+            try {
+                await this.plugin.notebookManager.addSourceFile(this.notebookId, fileName, text, undefined, targetSubfolder);
+                new Notice(`📋 テキストをソースに追加しました: "${fileName}"`, 5000);
+                await this.refresh(false);
+            } catch (err: any) {
+                console.error('Failed to add pasted text source:', err);
+                new Notice(`❌ テキストの追加に失敗しました: ${err?.message || err}`, 6000);
+            }
+        }
+    }
+
+    /**
+     * 「＋ 追加 ▼」メニューからのクリップボード貼付ハンドラー
+     */
+    private async handlePasteFromClipboardMenu(): Promise<void> {
+        if (!this.notebookId || this.metadata?.isRemote) return;
+
+        const targetSubfolder = this.activeDropSubfolder;
+        const existingFileNames = this.sources
+            .filter(s => targetSubfolder ? s.subfolder === targetSubfolder : !s.subfolder)
+            .map(s => s.name);
+
+        // 1. Electron clipboard をチェック (Obsidian デスクトップ環境)
+        const electron = typeof window !== 'undefined' && (window as any).require
+            ? (window as any).require('electron')
+            : (typeof require !== 'undefined' ? require('electron') : null);
+
+        if (electron?.clipboard) {
+            const nativeImg = electron.clipboard.readImage();
+            if (nativeImg && !nativeImg.isEmpty()) {
+                const pngBuffer = nativeImg.toPNG();
+                const fileName = generatePastedImageName(existingFileNames, new Date(), 'png');
+                try {
+                    new Notice('📸 クリップボードの画像をソースに追加中...', 3000);
+                    const result = await this.plugin.notebookManager.addSourceFile(this.notebookId, fileName, pngBuffer, undefined, targetSubfolder);
+                    if (result.isImageCompressed) {
+                        new Notice(`🖼️ "${fileName}" を WebP 圧縮してソースに追加しました`, 4000);
+                    } else {
+                        new Notice(`📸 "${fileName}" をソースに追加しました`, 4000);
+                    }
+                    await this.refresh(false);
+                    return;
+                } catch (e: any) {
+                    new Notice(`❌ 画像の追加に失敗しました: ${e?.message || e}`);
+                    return;
+                }
+            }
+
+            const text = electron.clipboard.readText();
+            if (text && text.trim()) {
+                const fileName = generatePastedTextName(text, existingFileNames);
+                try {
+                    await this.plugin.notebookManager.addSourceFile(this.notebookId, fileName, text, undefined, targetSubfolder);
+                    new Notice(`📋 テキストをソースに追加しました: "${fileName}"`, 5000);
+                    await this.refresh(false);
+                    return;
+                } catch (e: any) {
+                    new Notice(`❌ テキストの追加に失敗しました: ${e?.message || e}`);
+                    return;
+                }
+            }
+        }
+
+        // 2. Web Clipboard API (navigator.clipboard) フォールバック
+        if (typeof navigator !== 'undefined' && navigator.clipboard?.readText) {
+            try {
+                const text = await navigator.clipboard.readText();
+                if (text && text.trim()) {
+                    const fileName = generatePastedTextName(text, existingFileNames);
+                    await this.plugin.notebookManager.addSourceFile(this.notebookId, fileName, text, undefined, targetSubfolder);
+                    new Notice(`📋 テキストをソースに追加しました: "${fileName}"`, 5000);
+                    await this.refresh(false);
+                    return;
+                }
+            } catch (clipErr) {
+                console.warn('[AI Notebook] navigator.clipboard.readText failed:', clipErr);
+            }
+        }
+
+        new Notice('クリップボードにテキストや画像が見つかりませんでした。\n先に画面をキャプチャ(Win+Shift+S)またはテキストをコピーしてください。', 6000);
     }
 
     // ==========================================
