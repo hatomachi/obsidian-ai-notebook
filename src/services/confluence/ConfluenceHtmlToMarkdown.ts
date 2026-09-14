@@ -15,7 +15,14 @@ function decodeHtmlEntities(str: string): string {
         .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)));
 }
 
-export function confluenceHtmlToMarkdown(html: string): string {
+export interface ConfluenceMarkdownOptions {
+    /**
+     * 相対パス用のディレクトリプレフィックス（例: './confluence_10004_images'）
+     */
+    imageDirPrefix?: string;
+}
+
+export function confluenceHtmlToMarkdown(html: string, options?: ConfluenceMarkdownOptions): string {
     if (!html || !html.trim()) return '';
 
     let content = html;
@@ -84,6 +91,48 @@ export function confluenceHtmlToMarkdown(html: string): string {
                 return label;
             }
             return '';
+        }
+    );
+
+    // Confluence Image Macro: <ac:image>...<ri:attachment ri:filename="..." />...</ac:image>
+    content = content.replace(
+        /<ac:image[^>]*>([\s\S]*?)<\/ac:image>/gi,
+        (match, body) => {
+            const captionMatch = body.match(/<ac:caption[^>]*>([\s\S]*?)<\/ac:caption>/i);
+            const caption = captionMatch ? cleanInline(captionMatch[1]).trim() : '';
+
+            const attachMatch = body.match(/<ri:attachment[^>]*ri:filename="([^"]+)"/i);
+            if (attachMatch) {
+                const filename = decodeHtmlEntities(attachMatch[1]).trim();
+                const altText = caption || filename;
+                if (options?.imageDirPrefix) {
+                    const cleanPrefix = options.imageDirPrefix.replace(/\/+$/, '');
+                    return `\n\n![${altText}](${cleanPrefix}/${filename})\n\n`;
+                }
+                return `\n\n![${altText}](${filename})\n\n`;
+            }
+
+            const urlMatch = body.match(/<ri:url[^>]*ri:value="([^"]+)"/i);
+            if (urlMatch) {
+                const imgUrl = urlMatch[1].trim();
+                const altText = caption || 'image';
+                return `\n\n![${altText}](${imgUrl})\n\n`;
+            }
+
+            return caption ? `\n\n[画像: ${caption}]\n\n` : '';
+        }
+    );
+
+    // 標準 HTML <img> タグの変換
+    content = content.replace(
+        /<img\b([^>]*?)\/?>/gi,
+        (match, attrs) => {
+            const srcMatch = attrs.match(/src="([^"]+)"/i) || attrs.match(/src='([^']+)'/i);
+            if (!srcMatch) return '';
+            const src = srcMatch[1].trim();
+            const altMatch = attrs.match(/alt="([^"]*)"/i) || attrs.match(/alt='([^']*)'/i);
+            const alt = altMatch ? cleanInline(altMatch[1]).trim() : 'image';
+            return `![${alt}](${src})`;
         }
     );
 

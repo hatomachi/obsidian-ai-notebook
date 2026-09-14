@@ -8,7 +8,7 @@ import {
     SourceOrigin,
     AddSourceResult
 } from '../types';
-import { confluenceHtmlToMarkdown } from './confluence/ConfluenceHtmlToMarkdown';
+import { confluenceHtmlToMarkdown, ConfluenceMarkdownOptions } from './confluence/ConfluenceHtmlToMarkdown';
 
 /**
  * Confluence Base URL を正規化 (末尾スラッシュを削除)
@@ -360,12 +360,88 @@ export class ConfluenceService {
     /**
      * Storage / View HTML を Markdown に変換
      */
-    htmlToMarkdown(html: string): string {
-        return confluenceHtmlToMarkdown(html);
+    htmlToMarkdown(html: string, options?: ConfluenceMarkdownOptions): string {
+        return confluenceHtmlToMarkdown(html, options);
     }
 
     /**
-     * Confluence ページを取得してノートブックの sources/ にインポート
+     * ページの添付ファイル一覧を取得
+     */
+    async getAttachments(
+        pageId: string,
+        options: { serverId?: string; limit?: number } = {}
+    ): Promise<any[]> {
+        const server = this.getServer(options.serverId);
+        if (!server) return [];
+        const baseUrl = normalizeConfluenceBaseUrl(server.baseUrl);
+        const headers = this.buildAuthHeaders(server);
+        const limit = options.limit ?? 100;
+
+        let attachUrl = `${baseUrl}/rest/api/content/${pageId}/child/attachment?limit=${limit}`;
+        let res = await HttpClient.request({
+            url: attachUrl,
+            method: 'GET',
+            headers,
+            connectionMode: server.connectionMode,
+            insecureSsl: server.insecureSsl,
+            throw: false
+        });
+
+        if (res.status === 404 && !baseUrl.includes('/wiki')) {
+            attachUrl = `${baseUrl}/wiki/rest/api/content/${pageId}/child/attachment?limit=${limit}`;
+            res = await HttpClient.request({
+                url: attachUrl,
+                method: 'GET',
+                headers,
+                connectionMode: server.connectionMode,
+                insecureSsl: server.insecureSsl,
+                throw: false
+            });
+        }
+
+        if (res.status >= 200 && res.status < 300 && res.json?.results) {
+            return res.json.results;
+        }
+        return [];
+    }
+
+    /**
+     * 添付ファイルバイナリをダウンロード
+     */
+    async downloadAttachment(
+        downloadPathOrUrl: string,
+        options: { serverId?: string } = {}
+    ): Promise<Buffer> {
+        const server = this.getServer(options.serverId);
+        if (!server) throw new Error('Confluence サーバーが設定されていません。');
+        const baseUrl = normalizeConfluenceBaseUrl(server.baseUrl);
+        const headers = this.buildAuthHeaders(server);
+
+        let fullUrl = downloadPathOrUrl;
+        if (!/^https?:\/\//i.test(downloadPathOrUrl)) {
+            fullUrl = resolveConfluenceWebUrl(downloadPathOrUrl, baseUrl);
+        }
+
+        const res = await HttpClient.request({
+            url: fullUrl,
+            method: 'GET',
+            headers,
+            connectionMode: server.connectionMode,
+            insecureSsl: server.insecureSsl,
+            throw: true
+        });
+
+        if (res.arrayBuffer) {
+            return Buffer.from(res.arrayBuffer);
+        }
+        if (res.text) {
+            return Buffer.from(res.text, 'utf-8');
+        }
+        throw new Error('ダウンロードデータが空です');
+    }
+
+    /**
+     * Confluence ページを取得してノートブックの sources/ にインポート（画像も完全自動取得）
      */
     async importPageToNotebook(
         notebookId: string,
@@ -381,7 +457,51 @@ export class ConfluenceService {
         // 1. ページ詳細を取得
         const page = await this.getPage(pageId, { serverId: server.id });
 
-        // 2. Markdown 本文および Frontmatter を構成
+        // 2. 添付画像の自動検出 & ダウンロード
+        const imageFolderRel = `confluence_${page.id}_images`;
+        const downloadedImages: string[] = [];
+
+        try {
+            const attachments = await this.getAttachments(page.id, { serverId: server.id });
+            const imageAttachments = attachments.filter((a: any) =>
+                /\.(png|jpe?g|gif|webp|svg)$/i.test(a.title || '')
+            );
+
+            if (imageAttachments.length > 0) {
+                for (const img of imageAttachments) {
+                    const downloadPath = img._links?.download;
+                    if (downloadPath) {
+                        try {
+                            const buffer = await this.downloadAttachment(downloadPath, { serverId: server.id });
+                            await notebookManager.addSourceFile(
+                                notebookId,
+                                img.title,
+                                buffer,
+                                {
+                                    connectorId: 'confluence',
+                                    remoteId: `${page.id}_${img.id}`,
+                                    remoteUrl: resolveConfluenceWebUrl(downloadPath, server.baseUrl),
+                                    relativeFolder: imageFolderRel,
+                                    lastSyncedAt: new Date().toISOString()
+                                },
+                                imageFolderRel
+                            );
+                            downloadedImages.push(img.title);
+                        } catch (dlErr: any) {
+                            console.warn(`[ConfluenceService] Failed to download image [${img.title}]:`, dlErr.message);
+                        }
+                    }
+                }
+            }
+        } catch (attachErr: any) {
+            console.warn(`[ConfluenceService] Could not check attachments for page [${page.id}]:`, attachErr.message);
+        }
+
+        // 3. Markdown 本文の画像リンクを相対パスに置換
+        const imageDirPrefix = downloadedImages.length > 0 ? `./${imageFolderRel}` : undefined;
+        const markdown = this.htmlToMarkdown(page.bodyStorage || page.bodyView || '', { imageDirPrefix });
+
+        // 4. Markdown 本文および Frontmatter を構成
         const slug = slugifyTitle(page.title);
         const fileName = `confluence_${page.id}_${slug}.md`;
 
@@ -398,15 +518,17 @@ export class ConfluenceService {
             ancestorTitles.length > 0 ? `ancestors: ${JSON.stringify(ancestorTitles)}` : null,
             `remote_url: "${page.webuiUrl || ''}"`,
             page.version ? `version: ${page.version.number}` : null,
+            downloadedImages.length > 0 ? `images_folder: "${imageFolderRel}"` : null,
+            downloadedImages.length > 0 ? `images_count: ${downloadedImages.length}` : null,
             `synced_at: "${new Date().toISOString()}"`,
             '---',
             '',
             `# ${page.title}`,
             '',
-            page.markdown || '(本文なし)'
+            markdown || '(本文なし)'
         ].filter(l => l !== null).join('\n');
 
-        // 3. SourceOrigin オブジェクト
+        // 5. SourceOrigin オブジェクト
         const origin: SourceOrigin = {
             connectorId: 'confluence',
             remoteId: page.id,
@@ -416,7 +538,7 @@ export class ConfluenceService {
             lastSyncedAt: new Date().toISOString()
         };
 
-        // 4. NotebookManager の addSourceFile で sources/ に配置
+        // 6. NotebookManager の addSourceFile で sources/ に配置
         return await notebookManager.addSourceFile(notebookId, fileName, frontmatterLines, origin);
     }
 }

@@ -250,7 +250,7 @@ export function buildClaudeMdContent(input: NotebookProjectInput): string {
     md += `1. **検索 (Search)**: \`node .tools/confluence.cjs search "<キーワードまたはCQL>"\`\n`;
     md += `   - 過去に学習された探索の知恵（HINTS.md）を自動適用し、ノイズを排除して検索します。\n`;
     md += `2. **抽出 (Extract)**: \`node .tools/confluence.cjs extract <page_id>\`\n`;
-    md += `   - 指定ページを Markdown 化して \`sources/confluence_{id}_{slug}.md\` に抽出保存します。抽出後は Read ツールで精読してください。\n`;
+    md += `   - 指定ページを Markdown 化して \`sources/confluence_{id}_{slug}.md\` に抽出保存します。ページ内の添付画像（図表や構成図など）も自動で \`sources/confluence_{id}_images/\` にダウンロードされます。図表の視覚分析が必要な場合は Read ツールで直接画像を読み込んでください。\n`;
     md += `3. **知恵の学習・再帰育成 (Learn Hint)**:\n`;
     md += `   - 人間から「〇〇配下を探して」「その仕様は古い、△△を見ろ」等の助言・軌道修正を受けたら、必ず知恵を定着させてください：\n`;
     md += `     \`node .tools/confluence.cjs hint --topic "<トピック名>" --ancestor "<親ページID>" --guidance "<理由や助言>"\`\n`;

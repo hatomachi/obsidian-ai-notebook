@@ -13,6 +13,16 @@ export interface MockPage {
     viewBody?: string;
 }
 
+export interface MockAttachment {
+    id: string;
+    pageId: string;
+    title: string;
+    mediaType: string;
+    data: Buffer;
+}
+
+export const DUMMY_PNG_BUFFER = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082', 'hex');
+
 export interface MockSpace {
     key: string;
     name: string;
@@ -22,7 +32,7 @@ export interface MockSpace {
 /**
  * 社内Wikiのリアルなゴミ山・カオス階層データを生成
  */
-export function generateChaosWikiData(): { pages: MockPage[]; spaces: MockSpace[] } {
+export function generateChaosWikiData(): { pages: MockPage[]; spaces: MockSpace[]; attachments: MockAttachment[] } {
     const spaces: MockSpace[] = [
         { key: 'DEV-ARCH', name: '開発アーキテクチャ', description: '次世代システムのアーキテクチャ設計・API仕様' },
         { key: 'PROD-OLD', name: '旧システム運用', description: '2021〜2023年稼働のレガシーシステム運用Wiki' },
@@ -100,6 +110,14 @@ Host: api.example.com
 Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
 Accept: application/json]]></ac:plain-text-body>
 </ac:structured-macro>
+
+<h2>認証フロー図</h2>
+<p>
+  <ac:image ac:align="center" ac:layout="center">
+    <ri:attachment ri:filename="jwt_auth_flow.png" />
+    <ac:caption><p>JWT認証・認可シーケンスフロー図</p></ac:caption>
+  </ac:image>
+</p>
 `
     });
 
@@ -309,7 +327,17 @@ Accept: application/json]]></ac:plain-text-body>
         });
     }
 
-    return { pages, spaces };
+    const attachments: MockAttachment[] = [
+        {
+            id: 'att_20001',
+            pageId: '10004',
+            title: 'jwt_auth_flow.png',
+            mediaType: 'image/png',
+            data: DUMMY_PNG_BUFFER
+        }
+    ];
+
+    return { pages, spaces, attachments };
 }
 
 /**
@@ -384,13 +412,15 @@ export function matchCql(page: MockPage, cql: string): boolean {
 export class ConfluenceChaosSimulator {
     private pages: MockPage[];
     private spaces: MockSpace[];
+    private attachments: MockAttachment[];
     private server: http.Server | null = null;
     private port: number = 0;
 
-    constructor(initialData?: { pages: MockPage[]; spaces: MockSpace[] }) {
+    constructor(initialData?: { pages: MockPage[]; spaces: MockSpace[]; attachments?: MockAttachment[] }) {
         const data = initialData || generateChaosWikiData();
         this.pages = data.pages;
         this.spaces = data.spaces;
+        this.attachments = data.attachments || [];
     }
 
     getAllPages(): MockPage[] {
@@ -470,6 +500,50 @@ export class ConfluenceChaosSimulator {
                         size: searchRes.results.length,
                         totalSize: searchRes.totalSize
                     }));
+                    return;
+                }
+
+                // GET /rest/api/content/:id/child/attachment
+                const attachMatch = pathname.match(/^(?:\/wiki)?\/rest\/api\/content\/([^\/]+)\/child\/attachment$/);
+                if (attachMatch) {
+                    const pageId = attachMatch[1];
+                    const pageAttachments = this.attachments.filter(a => a.pageId === pageId);
+                    const results = pageAttachments.map(a => ({
+                        id: a.id,
+                        type: 'attachment',
+                        status: 'current',
+                        title: a.title,
+                        metadata: {
+                            mediaType: a.mediaType
+                        },
+                        _links: {
+                            download: `/download/attachments/${pageId}/${encodeURIComponent(a.title)}?version=1`,
+                            self: `http://localhost:${this.port}/rest/api/content/${a.id}`
+                        }
+                    }));
+                    res.writeHead(200);
+                    res.end(JSON.stringify({
+                        results,
+                        size: results.length,
+                        totalSize: results.length
+                    }));
+                    return;
+                }
+
+                // GET /download/attachments/:id/:filename
+                const downloadMatch = pathname.match(/^(?:\/wiki)?\/download\/attachments\/([^\/]+)\/([^\/]+)$/);
+                if (downloadMatch) {
+                    const pageId = downloadMatch[1];
+                    const filename = decodeURIComponent(downloadMatch[2]);
+                    const att = this.attachments.find(a => a.pageId === pageId && a.title === filename);
+                    if (!att) {
+                        res.writeHead(404);
+                        res.end(JSON.stringify({ statusCode: 404, message: `Attachment not found: ${filename}` }));
+                        return;
+                    }
+                    res.setHeader('Content-Type', att.mediaType);
+                    res.writeHead(200);
+                    res.end(att.data);
                     return;
                 }
 

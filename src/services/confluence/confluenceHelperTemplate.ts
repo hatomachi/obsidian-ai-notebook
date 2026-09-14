@@ -101,6 +101,70 @@ function apiRequest(endpoint) {
     });
 }
 
+// 2.5 バイナリファイル（画像等）ダウンロード関数
+function downloadFile(endpointOrUrl, destPath, maxRedirects = 5) {
+    return new Promise((resolve, reject) => {
+        if (maxRedirects <= 0) {
+            return reject(new Error('Too many redirects'));
+        }
+        const fullUrl = resolveConfluenceUrl(endpointOrUrl, config.baseUrl);
+        const isHttps = fullUrl.protocol === 'https:';
+        const client = isHttps ? https : http;
+
+        const headers = {
+            'User-Agent': 'Obsidian-AI-Notebook-CLI/1.0'
+        };
+
+        if (config.authType === 'basic' && config.token) {
+            const user = config.username || '';
+            const creds = Buffer.from(\`\${user}:\${config.token}\`).toString('base64');
+            headers['Authorization'] = \`Basic \${creds}\`;
+        } else if (config.token) {
+            headers['Authorization'] = \`Bearer \${config.token}\`;
+        }
+
+        const options = {
+            hostname: fullUrl.hostname === 'localhost' ? '127.0.0.1' : fullUrl.hostname,
+            port: fullUrl.port || (isHttps ? 443 : 80),
+            path: fullUrl.pathname + fullUrl.search,
+            method: 'GET',
+            headers
+        };
+
+        if (isHttps && config.insecureSsl) {
+            options.rejectUnauthorized = false;
+        }
+
+        const req = client.request(options, (res) => {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                res.resume();
+                return resolve(downloadFile(res.headers.location, destPath, maxRedirects - 1));
+            }
+
+            if (res.statusCode >= 200 && res.statusCode < 300) {
+                const fileStream = fs.createWriteStream(destPath);
+                res.pipe(fileStream);
+                fileStream.on('finish', () => {
+                    resolve();
+                });
+                fileStream.on('error', (err) => {
+                    fs.unlink(destPath, () => {});
+                    reject(err);
+                });
+            } else {
+                res.resume();
+                reject(new Error(\`HTTP \${res.statusCode}: \${res.statusMessage}\`));
+            }
+        });
+
+        req.on('error', (err) => {
+            reject(err);
+        });
+
+        req.end();
+    });
+}
+
 // 3. HINTS.md の簡易パース
 function parseHintsFile(filePath) {
     if (!fs.existsSync(filePath)) return [];
@@ -175,7 +239,7 @@ function loadAllHints() {
 
 // 4. HTML / Storage Format -> Markdown 簡易変換
 const BQ = String.fromCharCode(96);
-function htmlToMarkdown(html) {
+function htmlToMarkdown(html, options) {
     if (!html) return '';
     let content = html;
 
@@ -215,6 +279,41 @@ function htmlToMarkdown(html) {
         if (title && label && title !== label) return '[[' + title + '|' + label + ']]';
         if (title) return '[[' + title + ']]';
         return label || '';
+    });
+
+    // Confluence image
+    content = content.replace(/<ac:image[^>]*>([\\s\\S]*?)<\\/ac:image>/gi, (m, body) => {
+        const captionM = body.match(/<ac:caption[^>]*>([\\s\\S]*?)<\\/ac:caption>/i);
+        const caption = captionM ? captionM[1].replace(/<[^>]+>/g, '').trim() : '';
+
+        const attachM = body.match(/<ri:attachment[^>]*ri:filename="([^"]+)"/i);
+        if (attachM) {
+            const filename = attachM[1].trim();
+            const alt = caption || filename;
+            if (options && options.imageDirPrefix) {
+                const cleanPrefix = options.imageDirPrefix.replace(/\\/+$/, '');
+                return '\\n\\n![' + alt + '](' + cleanPrefix + '/' + filename + ')\\n\\n';
+            }
+            return '\\n\\n![' + alt + '](' + filename + ')\\n\\n';
+        }
+
+        const urlM = body.match(/<ri:url[^>]*ri:value="([^"]+)"/i);
+        if (urlM) {
+            const alt = caption || 'image';
+            return '\\n\\n![' + alt + '](' + urlM[1].trim() + ')\\n\\n';
+        }
+
+        return caption ? '\\n\\n[画像: ' + caption + ']\\n\\n' : '';
+    });
+
+    // Standard img
+    content = content.replace(/<img\\b([^>]*?)\\/?>/gi, (m, attrs) => {
+        const srcM = attrs.match(/src="([^"]+)"/i) || attrs.match(/src='([^']+)'/i);
+        if (!srcM) return '';
+        const src = srcM[1].trim();
+        const altM = attrs.match(/alt="([^"]*)"/i) || attrs.match(/alt='([^']*)'/i);
+        const alt = altM ? altM[1].trim() : 'image';
+        return '![' + alt + '](' + src + ')';
     });
 
     // Standard HTML
@@ -351,14 +450,50 @@ async function cmdExtract(pageId) {
         const webUrl = page._links && page._links.webui ? resolveConfluenceUrl(page._links.webui, config.baseUrl).toString() : '';
         const rawBody = page.body && page.body.storage ? page.body.storage.value : '';
 
-        const mdBody = htmlToMarkdown(rawBody);
-        const sanitized = sanitizeFilename(title);
-        const fileName = \`confluence_\${pageId}_\${sanitized}.md\`;
-
         const sourcesDir = path.join(process.cwd(), 'sources');
         if (!fs.existsSync(sourcesDir)) {
             fs.mkdirSync(sourcesDir, { recursive: true });
         }
+
+        // 添付画像の自動検出 & ダウンロード
+        const imageFolderRel = \`confluence_\${pageId}_images\`;
+        const imagesDir = path.join(sourcesDir, imageFolderRel);
+        const downloadedImages = [];
+
+        try {
+            const attachEndpoint = \`/rest/api/content/\${encodeURIComponent(pageId)}/child/attachment?limit=100\`;
+            const attachRes = await apiRequest(attachEndpoint);
+            const attachments = attachRes.results || [];
+            const imageAttachments = attachments.filter(a =>
+                /\\.(png|jpe?g|gif|webp|svg)$/i.test(a.title || '')
+            );
+
+            if (imageAttachments.length > 0) {
+                if (!fs.existsSync(imagesDir)) {
+                    fs.mkdirSync(imagesDir, { recursive: true });
+                }
+
+                for (const img of imageAttachments) {
+                    const downloadPath = img._links && img._links.download;
+                    if (downloadPath) {
+                        const targetFilePath = path.join(imagesDir, img.title);
+                        try {
+                            await downloadFile(downloadPath, targetFilePath);
+                            downloadedImages.push(img.title);
+                        } catch (dlErr) {
+                            console.warn(\`⚠️ Failed to download image [\${img.title}]:\`, dlErr.message);
+                        }
+                    }
+                }
+            }
+        } catch (attachErr) {
+            console.warn(\`⚠️ Could not fetch attachments for page [\${pageId}]:\`, attachErr.message);
+        }
+
+        const imageDirPrefix = downloadedImages.length > 0 ? \`./\${imageFolderRel}\` : undefined;
+        const mdBody = htmlToMarkdown(rawBody, { imageDirPrefix });
+        const sanitized = sanitizeFilename(title);
+        const fileName = \`confluence_\${pageId}_\${sanitized}.md\`;
 
         const filePath = path.join(sourcesDir, fileName);
         const now = new Date().toISOString();
@@ -385,7 +520,14 @@ async function cmdExtract(pageId) {
         console.log(\`✅ Successfully extracted page [\${pageId}] to sources/\${fileName}\`);
         console.log(\`   Title: \${title}\`);
         console.log(\`   Size: \${Buffer.byteLength(frontmatter, 'utf-8')} bytes\`);
-        console.log('\\nAIエージェントの皆さんへ: Readツールで sources/' + fileName + ' を読み込んで詳細を確認してください。');
+        if (downloadedImages.length > 0) {
+            console.log(\`   📸 Images: \${downloadedImages.length} image(s) downloaded to sources/\${imageFolderRel}/\`);
+            for (const imgName of downloadedImages) {
+                console.log(\`      - sources/\${imageFolderRel}/\${imgName}\`);
+            }
+        }
+        console.log('\\nAIエージェントの皆さんへ: Readツールで sources/' + fileName + ' を読み込んで詳細を確認してください。' +
+            (downloadedImages.length > 0 ? \`\\n図表や構成図の視覚分析が必要な場合は、sources/\${imageFolderRel}/ 配下の画像を Read ツールで直接読み込んでください。\` : ''));
     } catch (err) {
         console.error(\`❌ Extract failed for page [\${pageId}]:\`, err.message);
         process.exit(1);
