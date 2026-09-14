@@ -121,6 +121,8 @@ export interface TranscriptionErrorEntry {
 export interface NotebookSource {
     name: string;
     path: string; // Relative path in Obsidian vault
+    relativePath?: string; // sources/ 配下の相対パス (例: "01_要件/api.md" または "api.md")
+    subfolder?: string; // サブフォルダ名 (例: "01_要件"、直下の場合は undefined)
     extension: string;
     size: number;
     addedAt: string;

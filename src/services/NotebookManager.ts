@@ -1535,7 +1535,7 @@ export class NotebookManager {
     }
 
     /**
-     * ソースファイル一覧の取得（ローカルまたはGitLabオンデマンド）
+     * ソースファイル一覧の取得（ローカルまたはGitLabオンデマンド・再帰走査対応）
      */
     async getSources(id: string): Promise<NotebookSource[]> {
         const sourcesDir = await this.getSourcesDir(id);
@@ -1553,42 +1553,62 @@ export class NotebookManager {
         const errorsMap = await this.readTranscriptionErrors(id);
         const sources: NotebookSource[] = [];
 
-        for (const file of folder.children) {
-            if (file instanceof TFile && !file.name.startsWith('.')) {
-                let convertedFrom: string | undefined = undefined;
-                // *.xlsx.md, *.pptx.md, *.docx.md, *.pdf.md の検出
-                const docMatch = file.name.match(/^(.+\.(xlsx|xls|xlsm|pptx|docx|pdf))\.md$/i);
-                if (docMatch) {
-                    convertedFrom = docMatch[1];
-                } else {
-                    // 画像オフロード用 *.webp.md, *.png.md 等の検出
-                    const imgMatch = file.name.match(/^(.+\.(png|jpg|jpeg|webp|gif|bmp))\.md$/i);
-                    if (imgMatch) {
-                        convertedFrom = imgMatch[1];
+        // 再帰的にファイルを収集する内部関数（.cache などの隠しフォルダは除外）
+        const collectFiles = (currentFolder: TFolder, currentSubfolder?: string) => {
+            for (const child of currentFolder.children) {
+                if (child.name.startsWith('.')) continue; // .cache や隠しファイルはスキップ
+                if (child instanceof TFolder) {
+                    const subName = currentSubfolder ? `${currentSubfolder}/${child.name}` : child.name;
+                    collectFiles(child, subName);
+                } else if (child instanceof TFile) {
+                    const relativePath = currentSubfolder ? `${currentSubfolder}/${child.name}` : child.name;
+                    let convertedFrom: string | undefined = undefined;
+                    // *.xlsx.md, *.pptx.md, *.docx.md, *.pdf.md の検出
+                    const docMatch = child.name.match(/^(.+\.(xlsx|xls|xlsm|pptx|docx|pdf))\.md$/i);
+                    if (docMatch) {
+                        convertedFrom = docMatch[1];
+                    } else {
+                        // 画像オフロード用 *.webp.md, *.png.md 等の検出
+                        const imgMatch = child.name.match(/^(.+\.(png|jpg|jpeg|webp|gif|bmp))\.md$/i);
+                        if (imgMatch) {
+                            convertedFrom = imgMatch[1];
+                        }
                     }
+
+                    // 変換前ファイル名または現在のファイル名から origin を検索
+                    const convertedRelPath = convertedFrom ? (currentSubfolder ? `${currentSubfolder}/${convertedFrom}` : convertedFrom) : undefined;
+                    const origin = (convertedRelPath && originsMap[convertedRelPath])
+                        || (convertedFrom && originsMap[convertedFrom])
+                        || originsMap[relativePath]
+                        || originsMap[child.name]
+                        || undefined;
+                    const transcriptionError = errorsMap[relativePath]
+                        || errorsMap[child.name]
+                        || (convertedRelPath ? errorsMap[convertedRelPath] : undefined)
+                        || (convertedFrom ? errorsMap[convertedFrom] : undefined);
+
+                    sources.push({
+                        name: child.name,
+                        path: child.path,
+                        relativePath,
+                        subfolder: currentSubfolder,
+                        extension: child.extension,
+                        size: child.stat.size,
+                        addedAt: new Date(child.stat.ctime).toISOString(),
+                        origin,
+                        convertedFrom,
+                        transcriptionError
+                    });
                 }
-
-                // 変換前ファイル名または現在のファイル名から origin を検索
-                const origin = (convertedFrom && originsMap[convertedFrom]) || originsMap[file.name] || undefined;
-                const transcriptionError = errorsMap[file.name] || (convertedFrom ? errorsMap[convertedFrom] : undefined);
-
-                sources.push({
-                    name: file.name,
-                    path: file.path,
-                    extension: file.extension,
-                    size: file.stat.size,
-                    addedAt: new Date(file.stat.ctime).toISOString(),
-                    origin,
-                    convertedFrom,
-                    transcriptionError
-                });
             }
-        }
+        };
+
+        collectFiles(folder);
         return sources;
     }
 
     /**
-     * GitLab リポジトリ上のリモートソース一覧を取得
+     * GitLab リポジトリ上のリモートソース一覧を取得（サブフォルダ対応）
      */
     private async getRemoteSources(meta: NotebookMetadata): Promise<NotebookSource[]> {
         if (!this.gitlabService) return [];
@@ -1619,23 +1639,31 @@ export class NotebookManager {
         for (const item of tree) {
             if (item.type !== 'blob') continue;
             if (!item.path.startsWith(remotePrefix)) continue;
-            if (item.name.startsWith('.')) continue;
+            
+            const relPath = item.path.slice(remotePrefix.length);
+            if (relPath.startsWith('.') || relPath.includes('/.')) continue; // .cache等スキップ
+
+            const lastSlash = relPath.lastIndexOf('/');
+            const subfolder = lastSlash !== -1 ? relPath.slice(0, lastSlash) : undefined;
+            const name = item.name;
 
             let convertedFrom: string | undefined = undefined;
-            const docMatch = item.name.match(/^(.+\.(xlsx|xls|xlsm|pptx|docx|pdf))\.md$/i);
+            const docMatch = name.match(/^(.+\.(xlsx|xls|xlsm|pptx|docx|pdf))\.md$/i);
             if (docMatch) {
                 convertedFrom = docMatch[1];
             } else {
-                const imgMatch = item.name.match(/^(.+\.(png|jpg|jpeg|webp|gif|bmp))\.md$/i);
+                const imgMatch = name.match(/^(.+\.(png|jpg|jpeg|webp|gif|bmp))\.md$/i);
                 if (imgMatch) {
                     convertedFrom = imgMatch[1];
                 }
             }
 
-            const ext = item.name.includes('.') ? item.name.split('.').pop()! : '';
+            const ext = name.includes('.') ? name.split('.').pop()! : '';
             sources.push({
-                name: item.name,
+                name,
                 path: item.path,
+                relativePath: relPath,
+                subfolder,
                 extension: ext,
                 size: 0,
                 addedAt: meta.updatedAt,
@@ -1646,21 +1674,27 @@ export class NotebookManager {
     }
 
     /**
-     * ソースファイルの追加 (Binary / ArrayBuffer / Buffer 対応 & 自動決定的変換)
+     * ソースファイルの追加 (Binary / ArrayBuffer / Buffer 対応 & 自動決定的変換 & サブフォルダ対応)
      */
     async addSourceFile(
         id: string,
         fileName: string,
         data: ArrayBuffer | Buffer | string,
-        origin?: SourceOrigin
+        origin?: SourceOrigin,
+        subfolder?: string
     ): Promise<AddSourceResult> {
         const sourcesDir = await this.getSourcesDir(id);
-        await this.ensureFolder(sourcesDir);
+        const cleanSubfolder = subfolder ? subfolder.trim().replace(/^[\/\\]+|[\/\\]+$/g, '') : undefined;
+        const targetDir = cleanSubfolder ? normalizePath(`${sourcesDir}/${cleanSubfolder}`) : sourcesDir;
+        await this.ensureFolder(targetDir);
+
+        const relPath = cleanSubfolder ? `${cleanSubfolder}/${fileName}` : fileName;
 
         // origin が渡された場合、.origins.json を更新
         if (origin) {
             const originsMap = await this.readSourcesOrigins(id);
             originsMap[fileName] = origin;
+            if (cleanSubfolder) originsMap[relPath] = origin;
             await this.saveSourcesOrigins(id, originsMap);
         }
 
@@ -1708,6 +1742,7 @@ export class NotebookManager {
                 );
 
                 await this.clearTranscriptionError(id, fileName);
+                if (cleanSubfolder) await this.clearTranscriptionError(id, relPath);
 
                 // 🦊 GitLab Uploads への原本バイナリオフロード試行
                 const { server: gitlabServer, projectId: gitlabProjectId } = await this.resolveGitLabTarget(id);
@@ -1740,8 +1775,8 @@ export class NotebookManager {
                     const headerBanner = `> 📥 **原本ファイル**: [${fileName} (${sizeStr}) をダウンロード](${offloadResult.absoluteUrl})\n\n`;
                     const finalMarkdown = headerBanner + markdown;
 
-                    // 変換後 Markdown を sources 直下に作成
-                    const mdPath = normalizePath(`${sourcesDir}/${convertedFilename}`);
+                    // 変換後 Markdown を targetDir に作成
+                    const mdPath = normalizePath(`${targetDir}/${convertedFilename}`);
                     const resultFile = await this.safeCreateOrModify(mdPath, finalMarkdown);
 
                     // origin に GitLab Upload 情報を保存
@@ -1755,6 +1790,10 @@ export class NotebookManager {
                     const originsMap = await this.readSourcesOrigins(id);
                     originsMap[convertedFilename] = originInfo;
                     originsMap[fileName] = originInfo;
+                    if (cleanSubfolder) {
+                        originsMap[`${cleanSubfolder}/${convertedFilename}`] = originInfo;
+                        originsMap[`${cleanSubfolder}/${fileName}`] = originInfo;
+                    }
                     await this.saveSourcesOrigins(id, originsMap);
 
                     return {
@@ -1774,12 +1813,14 @@ export class NotebookManager {
                     console.warn(`[AI Notebook] ⚠️ GitLab オフロード失敗のためローカル .cache/ へフォールバックします:`, offloadResult.error);
                 }
 
-                // 変換後 Markdown を sources 直下に作成
-                const mdPath = normalizePath(`${sourcesDir}/${convertedFilename}`);
+                // 変換後 Markdown を targetDir に作成
+                const mdPath = normalizePath(`${targetDir}/${convertedFilename}`);
                 const resultFile = await this.safeCreateOrModify(mdPath, markdown);
 
-                // 原本バイナリを sources/.cache/ 配下に保存（差分検知や再同期用）
-                const cacheDir = normalizePath(`${sourcesDir}/.cache`);
+                // 原本バイナリを sources/.cache/[subfolder/] 配下に保存（差分検知や再同期用）
+                const cacheDir = cleanSubfolder
+                    ? normalizePath(`${sourcesDir}/.cache/${cleanSubfolder}`)
+                    : normalizePath(`${sourcesDir}/.cache`);
                 await this.ensureFolder(cacheDir);
                 const rawPath = normalizePath(`${cacheDir}/${fileName}`);
 
@@ -1793,7 +1834,7 @@ export class NotebookManager {
                     fileName, 
                     5, 
                     'Save', 
-                    `Markdown保存完了: ${convertedFilename} (原本は .cache/${fileName} にバックアップ)`
+                    `Markdown保存完了: ${convertedFilename} (原本は .cache/${cleanSubfolder ? cleanSubfolder + '/' : ''}${fileName} にバックアップ)`
                 );
 
                 return {
@@ -1806,10 +1847,10 @@ export class NotebookManager {
             } catch (transcribeError: any) {
                 DebugFolderHelper.logPipelineError(fileName, 4, 'Parse', transcribeError, { bufferLength: buffer.length });
                 console.error(`[AI Notebook] ❌ 自動パース失敗: ${fileName} - 原本バイナリを通常保存へフォールバックします:`, transcribeError);
-                await this.recordTranscriptionError(id, fileName, transcribeError, buffer.length);
+                await this.recordTranscriptionError(id, cleanSubfolder ? relPath : fileName, transcribeError, buffer.length);
 
-                // フォールバック: 原本を sources 直下に直接保存
-                const fallbackPath = normalizePath(`${sourcesDir}/${fileName}`);
+                // フォールバック: 原本を targetDir に直接保存
+                const fallbackPath = normalizePath(`${targetDir}/${fileName}`);
                 let fallbackFile: TFile;
                 if (typeof data === 'string') {
                     fallbackFile = await this.safeCreateOrModify(fallbackPath, data);
@@ -1875,7 +1916,7 @@ export class NotebookManager {
 
                 // ローカルには画像バイナリを保存せず、軽量な参照 Markdown ファイル（例: sample.webp.md）を作成！
                 const mdFilename = `${targetFilename}.md`;
-                const mdPath = normalizePath(`${sourcesDir}/${mdFilename}`);
+                const mdPath = normalizePath(`${targetDir}/${mdFilename}`);
 
                 const origKb = Math.round(compResult.originalSize / 1024);
                 const compKb = Math.round(compResult.compressedSize / 1024);
@@ -1925,6 +1966,11 @@ uploaded_at: "${new Date().toISOString()}"
                 originsMap[mdFilename] = originInfo;
                 originsMap[targetFilename] = originInfo;
                 originsMap[fileName] = originInfo;
+                if (cleanSubfolder) {
+                    originsMap[`${cleanSubfolder}/${mdFilename}`] = originInfo;
+                    originsMap[`${cleanSubfolder}/${targetFilename}`] = originInfo;
+                    originsMap[`${cleanSubfolder}/${fileName}`] = originInfo;
+                }
                 await this.saveSourcesOrigins(id, originsMap);
 
                 return {
@@ -1947,7 +1993,7 @@ uploaded_at: "${new Date().toISOString()}"
                 console.warn(`[AI Notebook] ⚠️ GitLab 画像オフロード失敗のためローカル保存へフォールバックします:`, offloadResult.error);
             }
 
-            const targetPath = normalizePath(`${sourcesDir}/${targetFilename}`);
+            const targetPath = normalizePath(`${targetDir}/${targetFilename}`);
             const savedFile = await this.safeCreateOrModifyBinary(targetPath, compResult.data);
             DebugFolderHelper.logPipelineStep(fileName, 5, 'Save (Local)', `WebP画像保存完了: ${targetFilename}`);
 
@@ -1965,7 +2011,7 @@ uploaded_at: "${new Date().toISOString()}"
 
         // その他一般ファイル（通常テキスト・SVG・コード等）
         DebugFolderHelper.logPipelineStep(fileName, 3, 'Route', `一般ファイルのため直接保存します`);
-        const filePath = normalizePath(`${sourcesDir}/${fileName}`);
+        const filePath = normalizePath(`${targetDir}/${fileName}`);
         let directFile: TFile;
 
         if (typeof data === 'string') {
@@ -2066,42 +2112,236 @@ uploaded_at: "${new Date().toISOString()}"
     }
 
     /**
-     * ソースファイルの削除
+     * ソースファイルの削除（サブフォルダ対応）
      */
-    async deleteSourceFile(id: string, fileName: string): Promise<void> {
+    async deleteSourceFile(id: string, relativePath: string): Promise<void> {
         const sourcesDir = await this.getSourcesDir(id);
-        const filePath = normalizePath(`${sourcesDir}/${fileName}`);
+        const filePath = normalizePath(`${sourcesDir}/${relativePath}`);
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (file instanceof TFile) {
             await this.app.vault.delete(file);
         }
 
-        // キャッシュ（.cache/）内の原本も削除
-        const cachePath = normalizePath(`${sourcesDir}/.cache/${fileName}`);
+        const fileName = path.basename(relativePath);
+
+        // キャッシュ（.cache/）内の原本も削除（サブフォルダ配下およびルート両方を探索）
+        const cachePath = normalizePath(`${sourcesDir}/.cache/${relativePath}`);
         const cacheFile = this.app.vault.getAbstractFileByPath(cachePath);
         if (cacheFile instanceof TFile) {
             await this.app.vault.delete(cacheFile);
+        }
+        const flatCachePath = normalizePath(`${sourcesDir}/.cache/${fileName}`);
+        const flatCacheFile = this.app.vault.getAbstractFileByPath(flatCachePath);
+        if (flatCacheFile instanceof TFile && flatCachePath !== cachePath) {
+            await this.app.vault.delete(flatCacheFile);
         }
 
         // *.md が削除された場合、元のバイナリキャッシュも探索して削除
         const match = fileName.match(/^(.+\.(xlsx|xls|xlsm|pptx|docx|pdf))\.md$/i);
         if (match) {
-            const origCachePath = normalizePath(`${sourcesDir}/.cache/${match[1]}`);
+            const origName = match[1];
+            const dir = path.dirname(relativePath);
+            const origCachePath = dir !== '.'
+                ? normalizePath(`${sourcesDir}/.cache/${dir}/${origName}`)
+                : normalizePath(`${sourcesDir}/.cache/${origName}`);
             const origCacheFile = this.app.vault.getAbstractFileByPath(origCachePath);
             if (origCacheFile instanceof TFile) {
                 await this.app.vault.delete(origCacheFile);
+            }
+            const flatOrigCache = normalizePath(`${sourcesDir}/.cache/${origName}`);
+            const flatOrigFile = this.app.vault.getAbstractFileByPath(flatOrigCache);
+            if (flatOrigFile instanceof TFile && flatOrigCache !== origCachePath) {
+                await this.app.vault.delete(flatOrigFile);
             }
         }
 
         // origins からも削除
         const originsMap = await this.readSourcesOrigins(id);
-        if (originsMap[fileName]) {
-            delete originsMap[fileName];
-            await this.saveSourcesOrigins(id, originsMap);
-        }
+        if (originsMap[relativePath]) delete originsMap[relativePath];
+        if (originsMap[fileName]) delete originsMap[fileName];
+        await this.saveSourcesOrigins(id, originsMap);
 
         // エラーログからも削除
+        await this.clearTranscriptionError(id, relativePath);
         await this.clearTranscriptionError(id, fileName);
+    }
+
+    /**
+     * sources/ 配下のサブフォルダ一覧を取得
+     */
+    async getSourceFolders(id: string): Promise<string[]> {
+        const sourcesDir = await this.getSourcesDir(id);
+        const folder = this.app.vault.getAbstractFileByPath(sourcesDir);
+        if (!(folder instanceof TFolder)) return [];
+        const folders: string[] = [];
+        const scanFolders = (curFolder: TFolder, curSub?: string) => {
+            for (const child of curFolder.children) {
+                if (child instanceof TFolder && !child.name.startsWith('.')) {
+                    const rel = curSub ? `${curSub}/${child.name}` : child.name;
+                    folders.push(rel);
+                    scanFolders(child, rel);
+                }
+            }
+        };
+        scanFolders(folder);
+        return folders.sort();
+    }
+
+    /**
+     * sources/ 配下に新しいサブフォルダを作成
+     */
+    async createSourceFolder(id: string, folderName: string): Promise<string> {
+        const cleanName = folderName.trim().replace(/^[\/\\]+|[\/\\]+$/g, '');
+        if (!cleanName) throw new Error('フォルダ名を入力してください');
+        const sourcesDir = await this.getSourcesDir(id);
+        const targetPath = normalizePath(`${sourcesDir}/${cleanName}`);
+        await this.ensureFolder(targetPath);
+        return cleanName;
+    }
+
+    /**
+     * サブフォルダの名前を変更（リネーム）
+     */
+    async renameSourceFolder(id: string, oldFolder: string, newFolder: string): Promise<void> {
+        const cleanOld = oldFolder.trim().replace(/^[\/\\]+|[\/\\]+$/g, '');
+        const cleanNew = newFolder.trim().replace(/^[\/\\]+|[\/\\]+$/g, '');
+        if (!cleanOld || !cleanNew) throw new Error('フォルダ名が不正です');
+        if (cleanOld === cleanNew) return;
+
+        const sourcesDir = await this.getSourcesDir(id);
+        const oldPath = normalizePath(`${sourcesDir}/${cleanOld}`);
+        const newPath = normalizePath(`${sourcesDir}/${cleanNew}`);
+        const target = this.app.vault.getAbstractFileByPath(oldPath);
+        if (!(target instanceof TFolder)) {
+            throw new Error(`対象フォルダが見つかりません: ${cleanOld}`);
+        }
+
+        const parentNew = normalizePath(path.dirname(newPath));
+        await this.ensureFolder(parentNew);
+        await this.app.fileManager.renameFile(target, newPath);
+
+        // キャッシュ側フォルダも存在すればリネーム
+        const oldCache = normalizePath(`${sourcesDir}/.cache/${cleanOld}`);
+        const newCache = normalizePath(`${sourcesDir}/.cache/${cleanNew}`);
+        const cacheTarget = this.app.vault.getAbstractFileByPath(oldCache);
+        if (cacheTarget instanceof TFolder) {
+            await this.ensureFolder(normalizePath(path.dirname(newCache)));
+            await this.app.fileManager.renameFile(cacheTarget, newCache);
+        }
+
+        // originsMap のキーを置換
+        const originsMap = await this.readSourcesOrigins(id);
+        let originsModified = false;
+        for (const key of Object.keys(originsMap)) {
+            if (key.startsWith(`${cleanOld}/`)) {
+                const newKey = `${cleanNew}/${key.slice(cleanOld.length + 1)}`;
+                originsMap[newKey] = originsMap[key];
+                delete originsMap[key];
+                originsModified = true;
+            }
+        }
+        if (originsModified) {
+            await this.saveSourcesOrigins(id, originsMap);
+        }
+    }
+
+    /**
+     * サブフォルダの削除（配下ファイルを直下に救出退避するか、まとめて削除するか選択）
+     */
+    async deleteSourceFolder(id: string, subfolder: string, moveFilesToRoot: boolean = true): Promise<void> {
+        const cleanFolder = subfolder.trim().replace(/^[\/\\]+|[\/\\]+$/g, '');
+        if (!cleanFolder) return;
+        const sourcesDir = await this.getSourcesDir(id);
+        const folderPath = normalizePath(`${sourcesDir}/${cleanFolder}`);
+        const targetFolder = this.app.vault.getAbstractFileByPath(folderPath);
+        if (!(targetFolder instanceof TFolder)) return;
+
+        if (moveFilesToRoot) {
+            // サブフォルダ配下の全ファイルを sourcesDir 直下に移動
+            const filesToMove: TFile[] = [];
+            const collect = (f: TFolder) => {
+                for (const c of f.children) {
+                    if (c instanceof TFile) filesToMove.push(c);
+                    else if (c instanceof TFolder) collect(c);
+                }
+            };
+            collect(targetFolder);
+
+            for (const file of filesToMove) {
+                const newFilePath = normalizePath(`${sourcesDir}/${file.name}`);
+                try {
+                    await this.app.fileManager.renameFile(file, newFilePath);
+                } catch (e) {
+                    console.warn(`[NotebookManager] ファイル移動中にエラー: ${file.name}`, e);
+                }
+            }
+        }
+
+        // フォルダそのものを削除
+        await this.app.vault.delete(targetFolder, true);
+
+        // キャッシュ側も存在すれば削除
+        const cachePath = normalizePath(`${sourcesDir}/.cache/${cleanFolder}`);
+        const cacheFolder = this.app.vault.getAbstractFileByPath(cachePath);
+        if (cacheFolder instanceof TFolder) {
+            await this.app.vault.delete(cacheFolder, true);
+        }
+    }
+
+    /**
+     * ソースファイルを別のサブフォルダまたは直下に移動
+     */
+    async moveSourceFile(id: string, sourceRelativePath: string, targetSubfolder: string | null): Promise<void> {
+        const sourcesDir = await this.getSourcesDir(id);
+        const currentFilePath = normalizePath(`${sourcesDir}/${sourceRelativePath}`);
+        const file = this.app.vault.getAbstractFileByPath(currentFilePath);
+        if (!(file instanceof TFile)) {
+            throw new Error(`対象ファイルが見つかりません: ${sourceRelativePath}`);
+        }
+
+        const cleanTarget = targetSubfolder && targetSubfolder.trim()
+            ? targetSubfolder.trim().replace(/^[\/\\]+|[\/\\]+$/g, '')
+            : null;
+
+        const targetDir = cleanTarget
+            ? normalizePath(`${sourcesDir}/${cleanTarget}`)
+            : sourcesDir;
+        await this.ensureFolder(targetDir);
+
+        const newFilePath = normalizePath(`${targetDir}/${file.name}`);
+        if (currentFilePath === newFilePath) return;
+
+        await this.app.fileManager.renameFile(file, newFilePath);
+
+        // Office/PDF の変換元バイナリキャッシュがあればそちらも移動
+        const fileName = file.name;
+        const match = fileName.match(/^(.+\.(xlsx|xls|xlsm|pptx|docx|pdf))\.md$/i);
+        const originalBinName = match ? match[1] : fileName;
+
+        const oldDir = path.dirname(sourceRelativePath);
+        const oldCachePath = oldDir !== '.'
+            ? normalizePath(`${sourcesDir}/.cache/${oldDir}/${originalBinName}`)
+            : normalizePath(`${sourcesDir}/.cache/${originalBinName}`);
+        const cacheFile = this.app.vault.getAbstractFileByPath(oldCachePath);
+        if (cacheFile instanceof TFile) {
+            const targetCacheDir = cleanTarget
+                ? normalizePath(`${sourcesDir}/.cache/${cleanTarget}`)
+                : normalizePath(`${sourcesDir}/.cache`);
+            await this.ensureFolder(targetCacheDir);
+            const newCachePath = normalizePath(`${targetCacheDir}/${originalBinName}`);
+            if (oldCachePath !== newCachePath) {
+                await this.app.fileManager.renameFile(cacheFile, newCachePath);
+            }
+        }
+
+        // originsMap の更新
+        const originsMap = await this.readSourcesOrigins(id);
+        const newRelativePath = cleanTarget ? `${cleanTarget}/${file.name}` : file.name;
+        if (originsMap[sourceRelativePath]) {
+            originsMap[newRelativePath] = originsMap[sourceRelativePath];
+            delete originsMap[sourceRelativePath];
+            await this.saveSourcesOrigins(id, originsMap);
+        }
     }
 
     /**

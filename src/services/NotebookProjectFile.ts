@@ -179,11 +179,9 @@ export function buildClaudeMdContent(input: NotebookProjectInput): string {
     md += `- \`artifacts/\` 成果物の出力先。**生成・編集した成果物は必ずここに書くこと**\n`;
     md += `- \`NOTEBOOK.md\` このノートブック固有の指示（人間が編集する）\n\n`;
 
-    const sourceLines = listFilesWithSize(input.sourcesDir);
     md += `## インプット (sources/)\n`;
-    md += sourceLines.length > 0
-        ? `${sourceLines.join('\n')}\n\n※内容が必要なものは Read / Glob 等のツールで直接読み込むこと。\n\n`
-        : `(現在インプットファイルはありません)\n\n`;
+    md += `今回の直接インプットです。用途・時期・種類ごとにサブフォルダで整理されている場合があります。\n`;
+    md += `エージェントは \`sources/\` 配下の構成を \`ls sources/\` や Glob / Find 等で自律的に探索・確認し、必要なファイルを Read ツール等で直接読み込んでください。\n\n`;
 
     const cachedImages = scanImageSources(input.sourcesDir);
     if (cachedImages.length > 0) {

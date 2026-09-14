@@ -10,6 +10,7 @@ import { MattermostModal } from './modals/MattermostModal';
 import { ImagePreviewModal } from './modals/ImagePreviewModal';
 import { RemoteMarkdownModal } from './modals/RemoteMarkdownModal';
 import { ConfluenceSearchModal } from './modals/ConfluenceSearchModal';
+import { MoveSourceModal } from './modals/MoveSourceModal';
 import { BoundFolderReader } from '../services/BoundFolderReader';
 import { AgentFactory } from '../adapters/AgentFactory';
 import { DebugFolderHelper } from '../utils/debugFolderHelper';
@@ -25,6 +26,7 @@ export class AINotebookDetailView extends ItemView {
     metadata: NotebookMetadata | null = null;
 
     sources: NotebookSource[] = [];
+    sourceFolders: string[] = [];
     artifacts: NotebookArtifact[] = [];
     linkedNotebooks: NotebookMetadata[] = [];
 
@@ -32,6 +34,8 @@ export class AINotebookDetailView extends ItemView {
     isSourcesCollapsed: boolean = false;
     isLinkedCollapsed: boolean = false;
     isExternalCollapsed: boolean = false;
+    collapsedFolders: Set<string> = new Set();
+    activeDropSubfolder?: string;
     
     // マルチセッション管理
     sessions: ChatSessionMetadata[] = [];
@@ -88,6 +92,7 @@ export class AINotebookDetailView extends ItemView {
 
         this.metadata = await this.plugin.notebookManager.getNotebookMetadata(this.notebookId);
         this.sources = await this.plugin.notebookManager.getSources(this.notebookId);
+        this.sourceFolders = await this.plugin.notebookManager.getSourceFolders(this.notebookId);
         this.artifacts = await this.plugin.notebookManager.getArtifacts(this.notebookId);
 
         // リンクされた参照ノートブックのメタデータをロード
@@ -401,7 +406,9 @@ export class AINotebookDetailView extends ItemView {
         fileInput.style.display = 'none';
         fileInput.onchange = async () => {
             if (fileInput.files && fileInput.files.length > 0) {
-                await this.handleFilesAdded(fileInput.files);
+                const targetSub = this.activeDropSubfolder;
+                this.activeDropSubfolder = undefined;
+                await this.handleFilesAdded(fileInput.files, targetSub);
             }
         };
 
@@ -417,9 +424,39 @@ export class AINotebookDetailView extends ItemView {
             const menu = new Menu();
 
             menu.addItem(item => {
+                item.setTitle('📁 新規フォルダを作成')
+                    .setIcon('folder-plus')
+                    .onClick(() => {
+                        if (!this.notebookId) return;
+                        new TextInputModal(
+                            this.app,
+                            '📁 新規サブフォルダを作成',
+                            '',
+                            async (folderName) => {
+                                if (!folderName.trim()) return;
+                                try {
+                                    await this.plugin.notebookManager.createSourceFolder(this.notebookId!, folderName.trim());
+                                    new Notice(`フォルダ "${folderName}" を作成しました`);
+                                    await this.refresh(false);
+                                } catch (e: any) {
+                                    new Notice(`フォルダ作成に失敗しました: ${e?.message || e}`);
+                                }
+                            },
+                            {
+                                description: 'sources/ 配下に作成するフォルダ名（例: 01_要件, 現行仕様, 議事録）',
+                                placeholder: '例: 01_要件'
+                            }
+                        ).open();
+                    });
+            });
+
+            menu.addItem(item => {
                 item.setTitle('📄 ローカルファイル (PDF, Office, 画像)')
                     .setIcon('upload')
-                    .onClick(() => fileInput.click());
+                    .onClick(() => {
+                        this.activeDropSubfolder = undefined;
+                        fileInput.click();
+                    });
             });
 
             menu.addItem(item => {
@@ -568,9 +605,10 @@ export class AINotebookDetailView extends ItemView {
         }
 
         // ==========================================
-        // 4. カテゴリ 1: 📄 直接投入ファイル
+        // 4. カテゴリ 1: 📄 ファイル（サブフォルダ・アコーディオン対応）
         // ==========================================
-        if (this.sources.length > 0) {
+        const hasSubfolders = this.sourceFolders.length > 0;
+        if (this.sources.length > 0 || hasSubfolders) {
             const catSection = contentArea.createDiv({ cls: 'ai-notebook-source-cat-section' });
             
             // アコーディオンヘッダー
@@ -589,132 +627,139 @@ export class AINotebookDetailView extends ItemView {
 
             if (!this.isSourcesCollapsed) {
                 const list = catSection.createDiv({ cls: 'ai-notebook-source-list' });
-                for (const src of this.sources) {
-                    const item = list.createDiv({ cls: 'ai-notebook-source-item is-clickable' });
+
+                // ① サブフォルダごとの描画
+                for (const folder of this.sourceFolders) {
+                    const folderSources = this.sources.filter(s => s.subfolder === folder || s.subfolder?.startsWith(folder + '/'));
+                    const isCollapsed = this.collapsedFolders.has(folder);
+
+                    const folderSection = list.createDiv({ cls: 'ai-notebook-source-folder-section' });
                     
-                    const effectiveExt = (src.convertedFrom
-                        ? src.convertedFrom.split('.').pop() || src.extension
-                        : src.extension).toLowerCase();
-                    const isImageSource = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(effectiveExt)
-                        || /\.(png|jpg|jpeg|webp|gif|bmp)(\.md)?$/i.test(src.name);
-
-                    // アイテムクリック: 画像ならプレビューモーダル、リモートならRemoteMarkdownModal、文書ならエディタで開く
-                    item.onclick = async () => {
-                        if (isImageSource) {
-                            new ImagePreviewModal(this.app, this.plugin, src).open();
-                        } else if (this.metadata?.isRemote) {
-                            new RemoteMarkdownModal(
-                                this.app,
-                                this.plugin.notebookManager,
-                                this.notebookId!,
-                                src.name,
-                                src.path,
-                                async () => {
-                                    const forked = await this.plugin.notebookManager.forkNotebook(this.notebookId!);
-                                    await this.setNotebookId(forked.id);
-                                }
-                            ).open();
-                        } else {
-                            await DebugFolderHelper.openInEditor(this.app, src.path);
-                        }
-                    };
-                    item.setAttribute('title', isImageSource ? `クリックで画像プレビューを表示: ${src.name}` : `クリックで内容をプレビュー: ${src.path}`);
-
-                    const iconSpan = item.createSpan({ cls: 'ai-notebook-source-icon' });
-                    setIcon(iconSpan, this.getFileIcon(effectiveExt));
-
-                    const nameWrap = item.createDiv({ cls: 'ai-notebook-source-name-wrap' });
-                    const nameSpan = nameWrap.createSpan({ text: src.name, cls: 'ai-notebook-source-name' });
-                    nameSpan.setAttribute('title', src.name);
-
-                    // 出典元フォルダのバッジ表示 (例: 📁 2024/A社_基幹刷新)
-                    if (src.origin?.relativeFolder) {
-                        const folderBadge = nameWrap.createSpan({ cls: 'ai-notebook-badge-origin-folder' });
-                        folderBadge.setText(`📁 ${src.origin.relativeFolder}`);
-                        folderBadge.setAttribute('title', `出典フォルダ: ${src.origin.relativeFolder}`);
-                    }
-
-                    if (src.convertedFrom) {
-                        const badge = nameWrap.createSpan({ cls: 'ai-notebook-badge-converted' });
-                        const origExt = (src.convertedFrom.split('.').pop() || '').toLowerCase();
-                        if (origExt === 'xlsx' || origExt === 'xls' || origExt === 'xlsm') {
-                            badge.setText('📊 Excel変換');
-                        } else if (origExt === 'pptx' || origExt === 'ppt') {
-                            badge.setText('📑 PPTX変換');
-                        } else if (origExt === 'docx' || origExt === 'doc') {
-                            badge.setText('📄 Word変換');
-                        } else if (origExt === 'pdf') {
-                            badge.setText('📕 PDF変換');
-                        } else if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(origExt)) {
-                            badge.setText('🖼️ 画像ノート');
-                        } else {
-                            badge.setText('変換済');
-                        }
-                    }
-
-                    // 🦊 GitLab Uploads オフロードバッジ表示
-                    if (src.origin?.connectorId === 'gitlab_upload' && src.origin.remoteUrl) {
-                        const gitlabBadge = nameWrap.createSpan({ cls: 'ai-notebook-badge-gitlab' });
-                        gitlabBadge.setText('🦊 GitLab原本');
-                        gitlabBadge.setAttribute('title', `GitLab Uploads に保存済み (Vault消費0バイト)\nURL: ${src.origin.remoteUrl}\nクリックでブラウザで開く`);
-                        gitlabBadge.onclick = (e) => {
-                            e.stopPropagation();
-                            window.open(src.origin!.remoteUrl, '_blank');
-                        };
-                    }
-
-                    // 変換エラー時の警告バッジ表示
-                    if (src.transcriptionError) {
-                        const errorBadge = nameWrap.createSpan({ cls: 'ai-notebook-badge-error' });
-                        errorBadge.setText('⚠️ 変換失敗');
-                        const errDetail = src.transcriptionError.errorMessage || '不明なエラー';
-                        errorBadge.setAttribute('title', `変換エラー: ${errDetail}\n(クリックでエラー詳細を表示)`);
-                        errorBadge.onclick = (e) => {
-                            e.stopPropagation();
-                            new Notice(`【変換エラー詳細: ${src.name}】\n${errDetail}\nサイズ: ${src.transcriptionError?.fileSize} bytes`, 10000);
-                        };
-                    }
-
-                    // 🛠️ デバッグ動線: 各ファイル用のFinder/左ペイン/詳細情報ボタン (着脱容易)
-                    if ((this.plugin.settings.enableDebugActions ?? true) && this.notebookId) {
-                        DebugFolderHelper.renderItemDebugActions(item, {
-                            app: this.app,
-                            source: src,
-                            notebookId: this.notebookId,
-                            rootDir: this.plugin.settings.rootDir
-                        });
-                    }
-
-                    // 未変換のバイナリまたはエラー発生ソースに対する再変換（リラン）ボタン
-                    const isTranscribableRaw = ['xlsx', 'xls', 'xlsm', 'docx', 'pptx'].includes(src.extension.toLowerCase()) && !src.convertedFrom;
-                    if (isTranscribableRaw || src.transcriptionError) {
-                        const retryBtn = item.createEl('button', { cls: 'ai-notebook-item-retry-btn' });
-                        setIcon(retryBtn, 'refresh-cw');
-                        retryBtn.setAttribute('title', 'Markdownへ再変換を実行');
-                        retryBtn.onclick = async (e) => {
-                            e.stopPropagation();
-                            if (!this.notebookId) return;
-                            retryBtn.addClass('is-loading');
-                            new Notice(`${src.name} の再変換を実行中...`);
-                            const result = await this.plugin.notebookManager.retranscribeSource(this.notebookId, src.name);
-                            if (result.success) {
-                                new Notice(`✅ ${src.name} を Markdown に変換しました`);
-                            } else {
-                                new Notice(`❌ 再変換に失敗しました: ${result.error}`, 8000);
-                            }
-                            await this.refresh();
-                        };
-                    }
-
-                    const deleteBtn = item.createEl('button', { cls: 'ai-notebook-item-delete-btn' });
-                    setIcon(deleteBtn, 'x');
-                    deleteBtn.setAttribute('title', '削除');
-                    deleteBtn.onclick = async (e) => {
+                    // サブフォルダへの D&D サポート
+                    folderSection.ondragover = (e: DragEvent) => {
+                        e.preventDefault();
                         e.stopPropagation();
-                        if (!this.notebookId) return;
-                        await this.plugin.notebookManager.deleteSourceFile(this.notebookId, src.name);
-                        await this.refresh();
+                        folderSection.addClass('is-dragover');
                     };
+                    folderSection.ondragleave = (e: DragEvent) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        folderSection.removeClass('is-dragover');
+                    };
+                    folderSection.ondrop = async (e: DragEvent) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        folderSection.removeClass('is-dragover');
+                        if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+                            await this.handleFilesAdded(e.dataTransfer.files, folder);
+                        }
+                    };
+
+                    const folderHeader = folderSection.createDiv({ cls: 'ai-notebook-source-folder-header' });
+                    const fChevron = folderHeader.createSpan({ cls: 'ai-notebook-source-folder-chevron' });
+                    setIcon(fChevron, isCollapsed ? 'chevron-right' : 'chevron-down');
+
+                    const fTitleWrap = folderHeader.createDiv({ cls: 'ai-notebook-source-folder-title-wrap' });
+                    const fIcon = fTitleWrap.createSpan({ cls: 'ai-notebook-source-folder-icon' });
+                    setIcon(fIcon, 'folder');
+                    fTitleWrap.createSpan({ text: folder, cls: 'ai-notebook-source-folder-name' });
+                    fTitleWrap.createSpan({ text: `${folderSources.length}`, cls: 'ai-notebook-count-badge' });
+
+                    folderHeader.onclick = () => {
+                        if (this.collapsedFolders.has(folder)) {
+                            this.collapsedFolders.delete(folder);
+                        } else {
+                            this.collapsedFolders.add(folder);
+                        }
+                        this.renderContextAndSourcePanel(panel);
+                    };
+
+                    // フォルダ操作アクション（右側）
+                    const folderActions = folderHeader.createDiv({ cls: 'ai-notebook-source-folder-actions' });
+                    
+                    // ➕ ファイル追加
+                    const addFileBtn = folderActions.createEl('button', { cls: 'ai-notebook-folder-action-btn' });
+                    setIcon(addFileBtn, 'plus');
+                    addFileBtn.setAttribute('title', `📁 ${folder} にファイルを追加`);
+                    addFileBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        this.activeDropSubfolder = folder;
+                        fileInput.click();
+                    };
+
+                    // ︙ メニュー
+                    const folderMenuBtn = folderActions.createEl('button', { cls: 'ai-notebook-folder-action-btn' });
+                    setIcon(folderMenuBtn, 'more-vertical');
+                    folderMenuBtn.setAttribute('title', 'フォルダの操作');
+                    folderMenuBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        const fMenu = new Menu();
+                        fMenu.addItem(it => {
+                            it.setTitle('✏️ フォルダ名を変更')
+                                .setIcon('edit')
+                                .onClick(() => {
+                                    new TextInputModal(
+                                        this.app,
+                                        '✏️ フォルダ名の変更',
+                                        folder,
+                                        async (newName) => {
+                                            if (!newName.trim() || newName.trim() === folder) return;
+                                            try {
+                                                await this.plugin.notebookManager.renameSourceFolder(this.notebookId!, folder, newName.trim());
+                                                new Notice(`フォルダ名を "${newName}" に変更しました`);
+                                                await this.refresh(false);
+                                            } catch (err: any) {
+                                                new Notice(`名前変更に失敗しました: ${err?.message || err}`);
+                                            }
+                                        }
+                                    ).open();
+                                });
+                        });
+                        fMenu.addItem(it => {
+                            it.setTitle('🗑️ フォルダを削除')
+                                .setIcon('trash')
+                                .onClick(async () => {
+                                    if (confirm(`フォルダ "${folder}" を削除しますか？\n（配下のファイルは直下に移動されます）`)) {
+                                        try {
+                                            await this.plugin.notebookManager.deleteSourceFolder(this.notebookId!, folder, true);
+                                            new Notice(`フォルダ "${folder}" を削除しました`);
+                                            await this.refresh(false);
+                                        } catch (err: any) {
+                                            new Notice(`削除に失敗しました: ${err?.message || err}`);
+                                        }
+                                    }
+                                });
+                        });
+                        fMenu.showAtMouseEvent(e);
+                    };
+
+                    if (!isCollapsed) {
+                        const folderFileList = folderSection.createDiv({ cls: 'ai-notebook-source-folder-file-list' });
+                        if (folderSources.length === 0) {
+                            folderFileList.createDiv({
+                                text: 'ファイルをここにドロップ',
+                                cls: 'ai-notebook-source-folder-empty'
+                            });
+                        } else {
+                            for (const src of folderSources) {
+                                this.renderSourceItem(folderFileList, src, panel, fileInput);
+                            }
+                        }
+                    }
+                }
+
+                // ② 直下のファイル群
+                const rootSources = this.sources.filter(s => !s.subfolder);
+                if (rootSources.length > 0) {
+                    if (hasSubfolders) {
+                        const rootHeader = list.createDiv({ cls: 'ai-notebook-source-root-header' });
+                        rootHeader.createSpan({ text: '📄 直下 (ルート)', cls: 'ai-notebook-source-root-title' });
+                        rootHeader.createSpan({ text: `${rootSources.length}`, cls: 'ai-notebook-count-badge' });
+                    }
+                    const rootList = list.createDiv({ cls: 'ai-notebook-source-root-list' });
+                    for (const src of rootSources) {
+                        this.renderSourceItem(rootList, src, panel, fileInput);
+                    }
                 }
             }
         }
@@ -930,9 +975,161 @@ export class AINotebookDetailView extends ItemView {
     }
 
     /**
+     * ソースファイル1件の描画
+     */
+    private renderSourceItem(containerEl: HTMLElement, src: NotebookSource, panel: HTMLElement, fileInput: HTMLInputElement): void {
+        const item = containerEl.createDiv({ cls: 'ai-notebook-source-item is-clickable' });
+        
+        const effectiveExt = (src.convertedFrom
+            ? src.convertedFrom.split('.').pop() || src.extension
+            : src.extension).toLowerCase();
+        const isImageSource = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(effectiveExt)
+            || /\.(png|jpg|jpeg|webp|gif|bmp)(\.md)?$/i.test(src.name);
+
+        // アイテムクリック: 画像ならプレビューモーダル、リモートならRemoteMarkdownModal、文書ならエディタで開く
+        item.onclick = async () => {
+            if (isImageSource) {
+                new ImagePreviewModal(this.app, this.plugin, src).open();
+            } else if (this.metadata?.isRemote) {
+                new RemoteMarkdownModal(
+                    this.app,
+                    this.plugin.notebookManager,
+                    this.notebookId!,
+                    src.name,
+                    src.path,
+                    async () => {
+                        const forked = await this.plugin.notebookManager.forkNotebook(this.notebookId!);
+                        await this.setNotebookId(forked.id);
+                    }
+                ).open();
+            } else {
+                await DebugFolderHelper.openInEditor(this.app, src.path);
+            }
+        };
+        item.setAttribute('title', isImageSource ? `クリックで画像プレビューを表示: ${src.name}` : `クリックで内容をプレビュー: ${src.path}`);
+
+        const iconSpan = item.createSpan({ cls: 'ai-notebook-source-icon' });
+        setIcon(iconSpan, this.getFileIcon(effectiveExt));
+
+        const nameWrap = item.createDiv({ cls: 'ai-notebook-source-name-wrap' });
+        const nameSpan = nameWrap.createSpan({ text: src.name, cls: 'ai-notebook-source-name' });
+        nameSpan.setAttribute('title', src.name);
+
+        // 出典元フォルダのバッジ表示 (例: 📁 2024/A社_基幹刷新)
+        if (src.origin?.relativeFolder) {
+            const folderBadge = nameWrap.createSpan({ cls: 'ai-notebook-badge-origin-folder' });
+            folderBadge.setText(`📁 ${src.origin.relativeFolder}`);
+            folderBadge.setAttribute('title', `出典フォルダ: ${src.origin.relativeFolder}`);
+        }
+
+        if (src.convertedFrom) {
+            const badge = nameWrap.createSpan({ cls: 'ai-notebook-badge-converted' });
+            const origExt = (src.convertedFrom.split('.').pop() || '').toLowerCase();
+            if (origExt === 'xlsx' || origExt === 'xls' || origExt === 'xlsm') {
+                badge.setText('📊 Excel変換');
+            } else if (origExt === 'pptx' || origExt === 'ppt') {
+                badge.setText('📑 PPTX変換');
+            } else if (origExt === 'docx' || origExt === 'doc') {
+                badge.setText('📄 Word変換');
+            } else if (origExt === 'pdf') {
+                badge.setText('📕 PDF変換');
+            } else if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(origExt)) {
+                badge.setText('🖼️ 画像ノート');
+            } else {
+                badge.setText('変換済');
+            }
+        }
+
+        // 🦊 GitLab Uploads オフロードバッジ表示
+        if (src.origin?.connectorId === 'gitlab_upload' && src.origin.remoteUrl) {
+            const gitlabBadge = nameWrap.createSpan({ cls: 'ai-notebook-badge-gitlab' });
+            gitlabBadge.setText('🦊 GitLab原本');
+            gitlabBadge.setAttribute('title', `GitLab Uploads に保存済み (Vault消費0バイト)\nURL: ${src.origin.remoteUrl}\nクリックでブラウザで開く`);
+            gitlabBadge.onclick = (e) => {
+                e.stopPropagation();
+                window.open(src.origin!.remoteUrl, '_blank');
+            };
+        }
+
+        // 変換エラー時の警告バッジ表示
+        if (src.transcriptionError) {
+            const errorBadge = nameWrap.createSpan({ cls: 'ai-notebook-badge-error' });
+            errorBadge.setText('⚠️ 変換失敗');
+            const errDetail = src.transcriptionError.errorMessage || '不明なエラー';
+            errorBadge.setAttribute('title', `変換エラー: ${errDetail}\n(クリックでエラー詳細を表示)`);
+            errorBadge.onclick = (e) => {
+                e.stopPropagation();
+                new Notice(`【変換エラー詳細: ${src.name}】\n${errDetail}\nサイズ: ${src.transcriptionError?.fileSize} bytes`, 10000);
+            };
+        }
+
+        // 🛠️ デバッグ動線: 各ファイル用のFinder/左ペイン/詳細情報ボタン (着脱容易)
+        if ((this.plugin.settings.enableDebugActions ?? true) && this.notebookId) {
+            DebugFolderHelper.renderItemDebugActions(item, {
+                app: this.app,
+                source: src,
+                notebookId: this.notebookId,
+                rootDir: this.plugin.settings.rootDir
+            });
+        }
+
+        // 未変換のバイナリまたはエラー発生ソースに対する再変換（リラン）ボタン
+        const isTranscribableRaw = ['xlsx', 'xls', 'xlsm', 'docx', 'pptx'].includes(src.extension.toLowerCase()) && !src.convertedFrom;
+        if (isTranscribableRaw || src.transcriptionError) {
+            const retryBtn = item.createEl('button', { cls: 'ai-notebook-item-retry-btn' });
+            setIcon(retryBtn, 'refresh-cw');
+            retryBtn.setAttribute('title', 'Markdownへ再変換を実行');
+            retryBtn.onclick = async (e) => {
+                e.stopPropagation();
+                if (!this.notebookId) return;
+                retryBtn.addClass('is-loading');
+                new Notice(`${src.name} の再変換を実行中...`);
+                const result = await this.plugin.notebookManager.retranscribeSource(this.notebookId, src.name);
+                if (result.success) {
+                    new Notice(`✅ ${src.name} を Markdown に変換しました`);
+                } else {
+                    new Notice(`❌ 再変換に失敗しました: ${result.error}`, 8000);
+                }
+                await this.refresh();
+            };
+        }
+
+        // 📁 移動ボタン
+        const moveBtn = item.createEl('button', { cls: 'ai-notebook-item-move-btn' });
+        setIcon(moveBtn, 'folder-symlink');
+        moveBtn.setAttribute('title', '別のフォルダへ移動');
+        moveBtn.onclick = (e) => {
+            e.stopPropagation();
+            if (!this.notebookId) return;
+            new MoveSourceModal(
+                this.app,
+                this.plugin.notebookManager,
+                this.notebookId,
+                src.name,
+                src.relativePath || src.name,
+                src.subfolder,
+                async () => {
+                    await this.refresh(false);
+                }
+            ).open();
+        };
+
+        // 🗑️ 削除ボタン
+        const deleteBtn = item.createEl('button', { cls: 'ai-notebook-item-delete-btn' });
+        setIcon(deleteBtn, 'x');
+        deleteBtn.setAttribute('title', '削除');
+        deleteBtn.onclick = async (e) => {
+            e.stopPropagation();
+            if (!this.notebookId) return;
+            await this.plugin.notebookManager.deleteSourceFile(this.notebookId, src.relativePath || src.name);
+            await this.refresh();
+        };
+    }
+
+    /**
      * ファイル投入の処理ハンドラー（パイプライン切り分けログ・レース状態対策・0バイトガード・結果可視化）
      */
-    private async handleFilesAdded(files: FileList): Promise<void> {
+    private async handleFilesAdded(files: FileList, subfolder?: string): Promise<void> {
         if (!this.notebookId || this.isProcessingFiles) return;
         this.isProcessingFiles = true;
 
@@ -954,8 +1151,8 @@ export class AINotebookDetailView extends ItemView {
                 fileName,
                 1,
                 'Event',
-                `ファイル検知: ${fileName} (サイズ: ${file.size.toLocaleString()} bytes, MIME: ${file.type || 'none'})`,
-                { name: fileName, size: file.size, type: file.type, localPath }
+                `ファイル検知: ${fileName} (サイズ: ${file.size.toLocaleString()} bytes, MIME: ${file.type || 'none'})${subfolder ? ` [フォルダ: ${subfolder}]` : ''}`,
+                { name: fileName, size: file.size, type: file.type, localPath, subfolder }
             );
 
             let buffer: ArrayBuffer | Buffer | null = null;
@@ -1028,7 +1225,7 @@ export class AINotebookDetailView extends ItemView {
             }
 
             try {
-                const result = await this.plugin.notebookManager.addSourceFile(this.notebookId, fileName, buffer);
+                const result = await this.plugin.notebookManager.addSourceFile(this.notebookId, fileName, buffer, undefined, subfolder);
                 if (result.isOffloaded) {
                     offloadedCount++;
                 }

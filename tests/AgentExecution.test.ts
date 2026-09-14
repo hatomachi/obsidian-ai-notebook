@@ -221,7 +221,7 @@ async function runTests() {
     for (const f of ['CLAUDE.md', 'AGENTS.md', 'NOTEBOOK.md', path.join('.claude', 'settings.json')]) {
         assert.ok(fs.existsSync(path.join(nbDir, f)), `${f} が生成されること`);
     }
-    assert.ok(fs.readFileSync(path.join(nbDir, 'CLAUDE.md'), 'utf-8').includes('meeting_memo.md'), 'sources のインベントリが反映されること');
+    assert.ok(fs.readFileSync(path.join(nbDir, 'CLAUDE.md'), 'utf-8').includes('## インプット (sources/)'), 'sources のインプット欄が反映されること');
 
     const settings = JSON.parse(fs.readFileSync(path.join(nbDir, '.claude', 'settings.json'), 'utf-8'));
     assert.deepStrictEqual(settings.permissions.additionalDirectories, result.additionalReadDirs, '参照先が読み取り許可に載ること');

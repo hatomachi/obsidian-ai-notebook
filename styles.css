@@ -2959,3 +2959,186 @@ img.ai-notebook-gitlab-error {
     padding: 1px 5px;
 }
 
+/* ==========================================================================
+   Subfolder Accordions & Folder Management in Source Panel
+   ========================================================================== */
+.ai-notebook-source-folder-section {
+    margin-bottom: 8px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    background-color: var(--background-secondary-alt);
+    overflow: hidden;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.ai-notebook-source-folder-section.is-dragover {
+    border: 2px dashed var(--interactive-accent) !important;
+    background-color: rgba(var(--interactive-accent-rgb, 120, 100, 240), 0.08) !important;
+}
+
+.ai-notebook-source-folder-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    cursor: pointer;
+    background-color: var(--background-secondary);
+    border-bottom: 1px solid transparent;
+    user-select: none;
+    transition: background-color 0.15s ease;
+}
+
+.ai-notebook-source-folder-header:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+.ai-notebook-source-folder-chevron {
+    display: flex;
+    align-items: center;
+    color: var(--text-muted);
+}
+
+.ai-notebook-source-folder-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+}
+
+.ai-notebook-source-folder-icon {
+    display: flex;
+    align-items: center;
+    color: var(--interactive-accent);
+}
+
+.ai-notebook-source-folder-name {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-normal);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ai-notebook-source-folder-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.ai-notebook-folder-action-btn {
+    background: none;
+    border: none;
+    padding: 3px 5px;
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.ai-notebook-folder-action-btn:hover {
+    color: var(--text-normal);
+    background-color: var(--background-modifier-hover);
+}
+
+.ai-notebook-source-folder-file-list {
+    padding: 4px 6px 8px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.ai-notebook-source-folder-empty {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 8px 4px;
+    text-align: center;
+}
+
+.ai-notebook-source-root-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    margin-bottom: 4px;
+    padding: 4px 6px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--background-modifier-border-focus);
+}
+
+.ai-notebook-source-root-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.ai-notebook-item-move-btn {
+    background: none;
+    border: none;
+    padding: 2px 4px;
+    border-radius: 3px;
+    cursor: pointer;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    opacity: 0.7;
+    transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.ai-notebook-item-move-btn:hover {
+    opacity: 1;
+    color: var(--interactive-accent);
+}
+
+/* MoveSourceModal */
+.ai-notebook-move-source-modal .ai-notebook-move-target-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 16px 0;
+    max-height: 240px;
+    overflow-y: auto;
+}
+
+.ai-notebook-move-target-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--background-modifier-border);
+    background-color: var(--background-secondary);
+    font-size: 0.85rem;
+    transition: all 0.15s ease;
+}
+
+.ai-notebook-move-target-item.is-clickable {
+    cursor: pointer;
+}
+
+.ai-notebook-move-target-item.is-clickable:hover {
+    background-color: var(--background-modifier-hover);
+    border-color: var(--interactive-accent);
+    color: var(--interactive-accent);
+}
+
+.ai-notebook-move-target-item.is-current {
+    opacity: 0.6;
+    background-color: var(--background-secondary-alt);
+    cursor: default;
+}
+
+.ai-notebook-move-target-current {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+
