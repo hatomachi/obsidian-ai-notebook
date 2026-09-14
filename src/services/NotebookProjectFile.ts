@@ -200,7 +200,7 @@ export function buildClaudeMdContent(input: NotebookProjectInput): string {
     const artifactLines = listFilesWithSize(input.artifactsDir);
     md += `## 既存の成果物 (artifacts/)\n`;
     md += artifactLines.length > 0
-        ? `${artifactLines.join('\n')}\n\n※更新・追記・レビュー対象は、まず読み込んで現状を確認してから部分編集すること。\n\n`
+        ? `${artifactLines.join('\n')}\n\n※更新・追記・レビュー対象は、まず読み込んで現状を確認してから部分編集すること。\n※成果物が複数ある場合、目的や最新ステータスの整理に \`artifacts/INDEX.md\`（成果物インデックス）を参照・更新して構いません。\n\n`
         : `(まだ成果物はありません。指示に応じて artifacts/ 配下に新規作成すること)\n\n`;
 
     if (input.linkedContexts && input.linkedContexts.length > 0) {

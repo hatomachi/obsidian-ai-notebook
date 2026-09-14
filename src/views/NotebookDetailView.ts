@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, setIcon, TFile, Notice, FileSystemAdapter, MarkdownRenderer, Menu } from 'obsidian';
+import { ItemView, WorkspaceLeaf, setIcon, TFile, Notice, FileSystemAdapter, MarkdownRenderer, Menu, normalizePath } from 'obsidian';
 import type AINotebookPlugin from '../main';
 import { NotebookMetadata, NotebookSource, NotebookArtifact, ChatMessage, ChatSessionMetadata, ChatSession, AgentDebugInfo } from '../types';
 import { ArtifactModal } from './modals/ArtifactModal';
@@ -26,6 +26,15 @@ import * as fs from 'fs';
 
 export const VIEW_TYPE_DETAIL = 'ai-notebook-detail';
 
+export interface ArtifactLineage {
+    artName: string;
+    sessionId: string;
+    sessionTitle: string;
+    messageId: string;
+    promptText: string;
+    timestamp: string;
+}
+
 export class AINotebookDetailView extends ItemView {
     plugin: AINotebookPlugin;
     notebookId: string | null = null;
@@ -34,6 +43,7 @@ export class AINotebookDetailView extends ItemView {
     sources: NotebookSource[] = [];
     sourceFolders: string[] = [];
     artifacts: NotebookArtifact[] = [];
+    artifactLineageMap: Map<string, ArtifactLineage> = new Map();
     linkedNotebooks: NotebookMetadata[] = [];
 
     // ソース列の折りたたみ状態
@@ -143,6 +153,9 @@ export class AINotebookDetailView extends ItemView {
             this.currentSession = null;
             this.chatHistory = [];
         }
+
+        // 成果物来歴マップの構築（全セッションから逆引きインデックス作成）
+        this.artifactLineageMap = await this.buildArtifactLineageMap();
 
         this.render();
 
@@ -1526,6 +1539,171 @@ export class AINotebookDetailView extends ItemView {
     }
 
     /**
+     * 全セッションを走査し、各成果物の最新の生成・更新来歴（Lineage）マップを構築
+     */
+    private async buildArtifactLineageMap(): Promise<Map<string, ArtifactLineage>> {
+        const map = new Map<string, ArtifactLineage>();
+        if (!this.notebookId || this.sessions.length === 0) return map;
+
+        // 全セッションデータを並列ロード
+        const sessionPromises = this.sessions.map(async (meta) => {
+            if (this.currentSession && this.currentSession.id === meta.id) {
+                return { meta, session: this.currentSession };
+            }
+            const session = await this.plugin.notebookManager.getChatSession(this.notebookId!, meta.id);
+            return { meta, session };
+        });
+
+        const loadedSessions = await Promise.all(sessionPromises);
+
+        for (const { meta, session } of loadedSessions) {
+            if (!session || !session.messages) continue;
+
+            const messages = session.messages;
+            for (let i = 0; i < messages.length; i++) {
+                const msg = messages[i];
+                if (msg.sender === 'agent' && msg.artifactsGenerated && msg.artifactsGenerated.length > 0) {
+                    // 直前のユーザーメッセージ（プロンプト）を取得
+                    let userPrompt = '';
+                    for (let j = i - 1; j >= 0; j--) {
+                        if (messages[j].sender === 'user') {
+                            userPrompt = messages[j].text;
+                            break;
+                        }
+                    }
+
+                    for (const rawArt of msg.artifactsGenerated) {
+                        const cleanName = rawArt.replace(/^artifacts\//, '');
+                        const msgTime = msg.timestamp || meta.updatedAt || '';
+                        const existing = map.get(cleanName);
+                        if (!existing || !existing.timestamp || msgTime >= existing.timestamp) {
+                            map.set(cleanName, {
+                                artName: cleanName,
+                                sessionId: meta.id,
+                                sessionTitle: meta.title,
+                                messageId: msg.id,
+                                promptText: userPrompt,
+                                timestamp: msgTime
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        return map;
+    }
+
+    /**
+     * 指定セッションの該当メッセージへスクロール＆一時ハイライト
+     */
+    private async jumpToChatMessage(sessionId: string, messageId: string): Promise<void> {
+        // セッションが異なる場合は切り替え
+        if (this.currentSessionId !== sessionId) {
+            await this.switchSession(sessionId);
+        }
+
+        // DOM描画の反映を待ってからスクロール
+        setTimeout(() => {
+            const targetEl = this.containerEl.querySelector(`[data-msg-id="${messageId}"], #ai-msg-${messageId}`) as HTMLElement;
+            if (targetEl) {
+                targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                targetEl.classList.remove('ai-notebook-msg-highlight');
+                // reflow を強制してアニメーション再発火
+                void targetEl.offsetWidth;
+                targetEl.classList.add('ai-notebook-msg-highlight');
+                setTimeout(() => {
+                    targetEl.classList.remove('ai-notebook-msg-highlight');
+                }, 2200);
+            } else {
+                new Notice('該当のチャットメッセージが見つかりませんでした');
+            }
+        }, 120);
+    }
+
+    /**
+     * 日時のフォーマット表示ヘルパー
+     */
+    private formatTimeOrDate(isoString?: string): string {
+        if (!isoString) return '';
+        const d = new Date(isoString);
+        if (isNaN(d.getTime())) return '';
+        const now = new Date();
+        const isToday = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+        const month = (d.getMonth() + 1).toString().padStart(2, '0');
+        const date = d.getDate().toString().padStart(2, '0');
+        const hours = d.getHours().toString().padStart(2, '0');
+        const minutes = d.getMinutes().toString().padStart(2, '0');
+        return isToday ? `${hours}:${minutes}` : `${month}/${date} ${hours}:${minutes}`;
+    }
+
+    /**
+     * 成果物モーダルを開く共通処理
+     */
+    private openArtifact(art: NotebookArtifact): void {
+        if (!this.notebookId) return;
+        const file = this.app.vault.getAbstractFileByPath(art.path);
+        if (file instanceof TFile) {
+            new ArtifactModal(
+                this.app,
+                this.plugin.notebookManager,
+                this.notebookId,
+                file,
+                async () => {
+                    await this.refresh();
+                },
+                this.isExecuting
+            ).open();
+        } else if (this.metadata?.isRemote) {
+            new RemoteMarkdownModal(
+                this.app,
+                this.plugin.notebookManager,
+                this.notebookId,
+                art.title,
+                art.path,
+                async () => {
+                    const forked = await this.plugin.notebookManager.forkNotebook(this.notebookId!);
+                    await this.setNotebookId(forked.id);
+                }
+            ).open();
+        }
+    }
+
+    /**
+     * ファイル名から成果物モーダルを開く
+     */
+    private async openArtifactByName(artName: string): Promise<void> {
+        if (!this.notebookId) return;
+        const cleanName = artName.replace(/^artifacts\//, '');
+        const targetArt = this.artifacts.find(a => a.id === cleanName || a.title === cleanName || a.path.endsWith(cleanName));
+        if (targetArt) {
+            this.openArtifact(targetArt);
+            return;
+        }
+
+        // キャッシュにない場合、Vault内の直接パスを探索
+        const notebookDir = await this.plugin.notebookManager.getNotebookDir(this.notebookId);
+        if (notebookDir) {
+            const directPath = normalizePath(`${notebookDir}/artifacts/${cleanName}`);
+            const file = this.app.vault.getAbstractFileByPath(directPath);
+            if (file instanceof TFile) {
+                new ArtifactModal(
+                    this.app,
+                    this.plugin.notebookManager,
+                    this.notebookId,
+                    file,
+                    async () => {
+                        await this.refresh();
+                    },
+                    this.isExecuting
+                ).open();
+                return;
+            }
+        }
+        new Notice(`成果物ファイルが見つかりません: ${cleanName}`);
+    }
+
+    /**
      * チャットパネルのレンダリング
      */
     private renderChatPanel(panel: HTMLElement): void {
@@ -1725,6 +1903,8 @@ export class AINotebookDetailView extends ItemView {
             const msgWrapper = messagesEl.createDiv({
                 cls: `ai-notebook-chat-message-wrapper ai-notebook-chat-message-wrapper-${msg.sender}`
             });
+            msgWrapper.dataset.msgId = msg.id;
+            msgWrapper.id = `ai-msg-${msg.id}`;
 
             // メッセージヘッダー（送信者名 + コピーボタン）
             const headerEl = msgWrapper.createDiv({ cls: 'ai-notebook-chat-msg-header' });
@@ -1768,9 +1948,22 @@ export class AINotebookDetailView extends ItemView {
                 const artIcon = provDiv.createSpan({ cls: 'ai-notebook-prov-icon' });
                 setIcon(artIcon, 'file-check');
                 provDiv.createSpan({ 
-                    text: ` 成果物作成/更新: ${msg.artifactsGenerated.join(', ')}`,
+                    text: ' 成果物作成/更新: ',
                     cls: 'ai-notebook-prov-text' 
                 });
+                const pillsDiv = provDiv.createSpan({ cls: 'ai-notebook-prov-pills' });
+                for (const artName of msg.artifactsGenerated) {
+                    const cleanName = artName.replace(/^artifacts\//, '');
+                    const pill = pillsDiv.createEl('button', {
+                        text: cleanName,
+                        cls: 'ai-notebook-prov-pill'
+                    });
+                    pill.setAttribute('title', `「${cleanName}」をプレビュー開く`);
+                    pill.onclick = (e) => {
+                        e.stopPropagation();
+                        this.openArtifactByName(cleanName);
+                    };
+                }
             }
 
             if (msg.linkedNotebookIds && msg.linkedNotebookIds.length > 0) {
@@ -1844,6 +2037,21 @@ export class AINotebookDetailView extends ItemView {
         
         // 手動成果物追加ボタン（ローカルノートブックのみ）
         if (!isRemote) {
+            // 📑 AI成果物インデックス作成・更新ボタン
+            const indexBtn = headerActions.createEl('button', { 
+                cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-icon-only' 
+            });
+            setIcon(indexBtn, 'list');
+            indexBtn.setAttribute('title', '📑 AIに成果物目次 (artifacts/INDEX.md) の作成・更新を指示');
+            indexBtn.onclick = async () => {
+                if (this.isExecuting) {
+                    new Notice('エージェントが実行中です');
+                    return;
+                }
+                const prompt = 'これまでの対話履歴と生成された成果物を点検し、artifacts/INDEX.md に各成果物の【目的・概要・最新ステータス（決定版/下書き/レビュー結果等）】を整理したインデックス目次を作成・更新してください。';
+                await this.handleSendMessage(prompt);
+            };
+
             const addBtn = headerActions.createEl('button', { cls: 'ai-notebook-btn ai-notebook-btn-secondary ai-notebook-btn-icon-only' });
             setIcon(addBtn, 'plus');
             addBtn.setAttribute('title', '新規成果物メモ作成');
@@ -1873,6 +2081,7 @@ export class AINotebookDetailView extends ItemView {
         } else {
             for (const art of this.artifacts) {
                 const isReview = art.id.toLowerCase().startsWith('review_') || art.title.includes('レビュー') || art.title.toLowerCase().includes('review');
+                const isIndex = art.id.toLowerCase() === 'index.md' || art.title.toLowerCase() === 'index.md' || art.title.includes('インデックス');
                 
                 const card = artifactList.createDiv({ 
                     cls: `ai-notebook-artifact-card ${isReview ? 'ai-notebook-artifact-card-review' : ''}` 
@@ -1880,40 +2089,51 @@ export class AINotebookDetailView extends ItemView {
                 
                 const cardHeader = card.createDiv({ cls: 'ai-notebook-artifact-card-header' });
                 const iconSpan = cardHeader.createSpan({ cls: 'ai-notebook-artifact-card-icon' });
-                setIcon(iconSpan, isReview ? 'check-square' : 'file-text');
+                setIcon(iconSpan, isIndex ? 'list' : (isReview ? 'check-square' : 'file-text'));
 
                 const titleSpan = cardHeader.createEl('h4', { text: art.title, cls: 'ai-notebook-artifact-card-title' });
                 if (isReview) {
-                    const badge = cardHeader.createSpan({ text: 'レビュー指摘', cls: 'ai-notebook-review-badge' });
+                    cardHeader.createSpan({ text: 'レビュー指摘', cls: 'ai-notebook-review-badge' });
+                } else if (isIndex) {
+                    cardHeader.createSpan({ 
+                        text: '目次・索引', 
+                        cls: 'ai-notebook-review-badge', 
+                        attr: { style: 'background: rgba(var(--interactive-accent-rgb), 0.15); color: var(--interactive-accent); border-color: rgba(var(--interactive-accent-rgb), 0.3);' } 
+                    });
+                }
+
+                // 来歴情報 (Lineage: プロンプト & 会話ジャンプ)
+                const lineage = this.artifactLineageMap.get(art.id) || this.artifactLineageMap.get(art.title);
+                if (lineage) {
+                    if (lineage.promptText) {
+                        const promptEl = card.createDiv({ cls: 'ai-notebook-artifact-prompt' });
+                        const cleanPrompt = lineage.promptText.replace(/\n+/g, ' ').trim();
+                        promptEl.createSpan({ text: `💬 "${cleanPrompt}"` });
+                        promptEl.setAttribute('title', cleanPrompt);
+                    }
+
+                    const footerEl = card.createDiv({ cls: 'ai-notebook-artifact-card-footer' });
+                    const timeEl = footerEl.createSpan({ cls: 'ai-notebook-artifact-card-time' });
+                    const timeIcon = timeEl.createSpan();
+                    setIcon(timeIcon, 'clock');
+                    timeEl.createSpan({ text: ` ${this.formatTimeOrDate(lineage.timestamp)}` });
+
+                    const jumpBtn = footerEl.createEl('button', {
+                        cls: 'ai-notebook-artifact-jump-btn'
+                    });
+                    setIcon(jumpBtn, 'message-square');
+                    jumpBtn.createSpan({ text: ' 会話を表示' });
+                    const sessionHint = lineage.sessionTitle ? ` (セッション: ${lineage.sessionTitle})` : '';
+                    jumpBtn.setAttribute('title', `該当のチャットメッセージへジャンプ${sessionHint}`);
+
+                    jumpBtn.onclick = async (e) => {
+                        e.stopPropagation(); // カード本体のモーダルオープンを防ぐ
+                        await this.jumpToChatMessage(lineage.sessionId, lineage.messageId);
+                    };
                 }
 
                 card.onclick = () => {
-                    if (!this.notebookId) return;
-                    const file = this.app.vault.getAbstractFileByPath(art.path);
-                    if (file instanceof TFile) {
-                        new ArtifactModal(
-                            this.app, 
-                            this.plugin.notebookManager, 
-                            this.notebookId, 
-                            file, 
-                            async () => {
-                                await this.refresh();
-                            },
-                            this.isExecuting
-                        ).open();
-                    } else if (isRemote) {
-                        new RemoteMarkdownModal(
-                            this.app,
-                            this.plugin.notebookManager,
-                            this.notebookId,
-                            art.title,
-                            art.path,
-                            async () => {
-                                const forked = await this.plugin.notebookManager.forkNotebook(this.notebookId!);
-                                await this.setNotebookId(forked.id);
-                            }
-                        ).open();
-                    }
+                    this.openArtifact(art);
                 };
             }
         }
