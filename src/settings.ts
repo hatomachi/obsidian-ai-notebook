@@ -44,10 +44,11 @@ export class AINotebookSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName('アクティブ AI エージェント')
-            .setDesc('使用するローカル CLI エージェントを選択します（antigravity CLI / claude CLI）')
+            .setDesc('使用するローカル CLI エージェントを選択します（antigravity CLI / claude CLI / copilot CLI）')
             .addDropdown(dropdown => dropdown
                 .addOption('antigravity', 'Antigravity CLI (Default)')
                 .addOption('claude', 'Claude Code CLI (Claude)')
+                .addOption('copilot', 'GitHub Copilot CLI (Copilot)')
                 .setValue(this.plugin.settings.activeAgent)
                 .onChange(async (value) => {
                     this.plugin.settings.activeAgent = value as AIAgentType;
@@ -73,6 +74,17 @@ export class AINotebookSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.claudePath)
                 .onChange(async (value) => {
                     this.plugin.settings.claudePath = value.trim() || 'claude';
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('GitHub Copilot CLI パス')
+            .setDesc('実行可能な copilot CLI コマンド名または絶対パス (例: copilot)')
+            .addText(text => text
+                .setPlaceholder('copilot')
+                .setValue(this.plugin.settings.copilotPath || 'copilot')
+                .onChange(async (value) => {
+                    this.plugin.settings.copilotPath = value.trim() || 'copilot';
                     await this.plugin.saveSettings();
                 }));
 

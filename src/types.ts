@@ -184,7 +184,7 @@ export interface ChatMessage {
     debugInfo?: AgentDebugInfo;    // 実行ログ・デバッグ情報
 }
 
-export type AIAgentType = 'antigravity' | 'claude';
+export type AIAgentType = 'antigravity' | 'claude' | 'copilot';
 
 
 export interface MattermostChannelRef {
@@ -392,6 +392,7 @@ export interface AINotebookSettings {
     activeAgent: AIAgentType;
     antigravityPath: string;
     claudePath: string;
+    copilotPath?: string;
     defaultModel: string;
     sharedFolderBasePath?: string; // CIFS / ローカル共有フォルダの起点パス
     mattermostUrl?: string;        // Mattermost サーバーURL (例: https://mattermost.internal.company.com)
@@ -420,6 +421,7 @@ export const DEFAULT_SETTINGS: AINotebookSettings = {
     activeAgent: 'antigravity',
     antigravityPath: 'agy',
     claudePath: 'claude',
+    copilotPath: 'copilot',
     defaultModel: '',
     sharedFolderBasePath: '',
     mattermostUrl: '',
