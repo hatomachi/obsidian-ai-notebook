@@ -94,6 +94,109 @@ async function runTests() {
     // モックのリセット
     __setMockPdfJs(null);
 
+    // Test 6: unwrapLines のスマート結合（日本語折り返し・箇条書き・句点・ハイフネーション）検証
+    console.log('Test 6: unwrapLines によるスマート結合・アンラップ検証');
+    // (a) ユーザー課題ケース: 「⑥ 事」+「後申請・承認理由」の結合
+    const caseA = PdfParser.unwrapLines(['⑥ 事', '後申請・承認理由']);
+    assert.strictEqual(caseA.length, 1);
+    assert.strictEqual(caseA[0], '⑥ 事後申請・承認理由');
+    assert.ok(caseA[0].includes('事後申請'), '「事後申請」で検索ヒットすること');
+
+    // (b) 通常の日本語文章の折り返し
+    const caseB = PdfParser.unwrapLines([
+        '本システムは社内業務の効率化を目的として',
+        '開発されたワークスペースツールです。'
+    ]);
+    assert.strictEqual(caseB.length, 1);
+    assert.strictEqual(caseB[0], '本システムは社内業務の効率化を目的として開発されたワークスペースツールです。');
+
+    // (c) 句点（。）で終わる場合は改行を維持
+    const caseC = PdfParser.unwrapLines([
+        '第1フェーズの検証は完了しました。',
+        '続いて第2フェーズの開発に着手します。'
+    ]);
+    assert.strictEqual(caseC.length, 2);
+    assert.strictEqual(caseC[0], '第1フェーズの検証は完了しました。');
+    assert.strictEqual(caseC[1], '続いて第2フェーズの開発に着手します。');
+
+    // (d) 箇条書き・リスト（-, 1., ①, ・, 【】）の改行維持
+    const caseD = PdfParser.unwrapLines([
+        '- 項目Aの概要',
+        '- 項目Bの概要',
+        '① 事前準備',
+        '② 承認手続き',
+        '【重要】注意事項の確認'
+    ]);
+    assert.strictEqual(caseD.length, 5);
+
+    // (e) 箇条書き項目の途中で折り返された場合は正しく結合
+    const caseE = PdfParser.unwrapLines([
+        '- 申請理由：全社共通プロキシ環境下での',
+        'ネットワーク通信トラブルを解消するため。',
+        '- 完了条件：全テストのパス'
+    ]);
+    assert.strictEqual(caseE.length, 2);
+    assert.strictEqual(caseE[0], '- 申請理由：全社共通プロキシ環境下でのネットワーク通信トラブルを解消するため。');
+    assert.strictEqual(caseE[1], '- 完了条件：全テストのパス');
+
+    // (f) 英語ハイフネーション結合と英単語間スペース
+    const caseF = PdfParser.unwrapLines([
+        'This is an impor-',
+        'tant update for',
+        'the system.'
+    ]);
+    assert.strictEqual(caseF.length, 1);
+    assert.strictEqual(caseF[0], 'This is an important update for the system.');
+    console.log('  -> OK: unwrapLines の各パターン判定合格');
+
+    // Test 7: joinTextFragments のフラグメント結合検証
+    console.log('Test 7: joinTextFragments による同一行フラグメント結合検証');
+    assert.strictEqual(PdfParser.joinTextFragments('事', '後申請'), '事後申請', '日本語文字同士はスペースなし');
+    assert.strictEqual(PdfParser.joinTextFragments('承認', '理由'), '承認理由', '日本語文字同士はスペースなし');
+    assert.strictEqual(PdfParser.joinTextFragments('Hello', 'World'), 'Hello World', '英単語同士はスペース挿入');
+    assert.strictEqual(PdfParser.joinTextFragments('Version', '2.0'), 'Version 2.0', '英数字同士はスペース挿入');
+    assert.strictEqual(PdfParser.joinTextFragments('No.', '1'), 'No. 1', '記号と数字はスペース挿入');
+    console.log('  -> OK: joinTextFragments 合格');
+
+    // Test 8: 段組みPDFのパースにおける「事後申請」抽出と行単位検索（grep）検証
+    console.log('Test 8: 段組みPDFテキスト抽出パイプラインでの grep 検索性検証');
+    __setMockPdfJs({
+        getDocument: () => ({
+            promise: Promise.resolve({
+                numPages: 1,
+                getPage: async () => ({
+                    getTextContent: async () => ({
+                        items: [
+                            // 1行目: 「⑥ 事」
+                            { str: '⑥', transform: [1, 0, 0, 1, 50, 700] },
+                            { str: ' 事', transform: [1, 0, 0, 1, 60, 700] },
+                            // 2行目（Y座標が変化: 700 -> 680）: 「後申請・承認理由」
+                            { str: '後申請', transform: [1, 0, 0, 1, 50, 680] },
+                            { str: '・承認理由', transform: [1, 0, 0, 1, 90, 680] },
+                            // 3行目: 「業務効率化のため」
+                            { str: '：業務効率化のため。', transform: [1, 0, 0, 1, 150, 680] }
+                        ]
+                    })
+                })
+            })
+        })
+    });
+
+    const parsedMd = await PdfParser.parse(dummyPdfData, 'application_form.pdf');
+    // 各行ごとに grep 相当の検索を行う
+    const parsedLines = parsedMd.split('\n');
+    const matchedLine = parsedLines.find(line => line.includes('事後申請'));
+
+    assert.ok(matchedLine, '「事後申請」を含む行が必ず見つかること (grep ヒット)');
+    assert.strictEqual(
+        matchedLine,
+        '⑥ 事後申請・承認理由：業務効率化のため。',
+        '行単位で単語が結合され完全な文として復元されていること'
+    );
+    console.log('  -> OK: 段組みで分割された「事後申請」が単一の行脈で grep 検索ヒットすることを確認');
+
+    __setMockPdfJs(null);
+
     console.log('=== 全 PdfParser テストに合格しました (All tests passed) ===');
 }
 
