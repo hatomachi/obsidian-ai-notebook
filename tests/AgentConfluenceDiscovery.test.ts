@@ -72,7 +72,17 @@ async function runTests() {
         assert(claudeMd.includes('.tools/confluence.cjs search'), 'CLAUDE.md に search ツールの説明がありません');
         assert(claudeMd.includes('.tools/confluence.cjs extract'), 'CLAUDE.md に extract ツールの説明がありません');
         assert(claudeMd.includes('.tools/confluence.cjs hint'), 'CLAUDE.md に hint ツールの説明がありません');
-        console.log('  -> OK: .tools/confluence.cjs, config, CLAUDE.md ガイドが正常に配備されました');
+        assert(claudeMd.includes('ツールの実行条件（厳守）'), 'CLAUDE.md にツールの実行条件が含まれていません');
+        assert(claudeMd.includes('勝手にこのツールを実行してはいけません'), 'CLAUDE.md に勝手な実行禁止ルールが含まれていません');
+        assert(claudeMd.includes('Confluenceで検索しましょうか？'), 'CLAUDE.md に提案ルールが含まれていません');
+
+        const notebookMdPath = path.join(nb1Dir, 'NOTEBOOK.md');
+        assert(fs.existsSync(notebookMdPath), 'NOTEBOOK.md が生成されていません');
+        const notebookMd = fs.readFileSync(notebookMdPath, 'utf-8');
+        assert(notebookMd.includes('情報の探索と外部ツールの利用'), 'NOTEBOOK.md に探索進め方ルールが含まれていません');
+        assert(notebookMd.includes('Confluenceで検索しましょうか？'), 'NOTEBOOK.md に提案ルールが含まれていません');
+
+        console.log('  -> OK: .tools/confluence.cjs, config, CLAUDE.md ガイド & NOTEBOOK.md 進め方が正常に配備・検証されました');
 
         // Step 2: CLI 経由での学習前探索 (ノイズ混在)
         console.log('Step 2: CLI 探索 (node .tools/confluence.cjs search "認証") -> 全社ノイズ混在の確認');

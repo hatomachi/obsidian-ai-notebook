@@ -246,7 +246,11 @@ export function buildClaudeMdContent(input: NotebookProjectInput): string {
     const hasUserHints = userHintsPath && fs.existsSync(userHintsPath);
 
     md += `## 🌐 外部Wiki (Confluence) 自律探索 & 知恵の学習 (Search Hints)\n`;
-    md += `Confluenceの調査や仕様確認を指示された際は、以下のCLIヘルパーを使って自律的に検索・抽出を行ってください：\n\n`;
+    md += `社内Wiki（Confluence）を探索するためのCLIヘルパーです。\n\n`;
+    md += `⚠️ **ツールの実行条件（厳守）**:\n`;
+    md += `- 本ツール（.tools/confluence.cjs）は、ユーザーから「Confluenceで調べて」「Wikiも探して」等と**明示的に指示された場合のみ**実行してください。\n`;
+    md += `- 「PDFから調べて」「sources内から探して」など特定のソースを指定された場合、あるいは一般的な調査で \`sources/\` 内に見当たらない場合、**勝手にこのツールを実行してはいけません**。\n`;
+    md += `- 情報が見当たらない場合は、勝手に外部検索を行わず「\`sources/\` 内には見当たりませんでした。Confluenceで検索しましょうか？」とチャットで提案し、ユーザーの指示を待ってください。\n\n`;
     md += `1. **検索 (Search)**: \`node .tools/confluence.cjs search "<キーワードまたはCQL>"\`\n`;
     md += `   - 過去に学習された探索の知恵（HINTS.md）を自動適用し、ノイズを排除して検索します。\n`;
     md += `2. **抽出 (Extract)**: \`node .tools/confluence.cjs extract <page_id>\`\n`;
@@ -291,6 +295,11 @@ const NOTEBOOK_MD_TEMPLATE = `# このノートブック固有の指示
 - 合意が取れてから artifacts/ にファイルを作成する。
 - ただし「すぐ作って」「このまま進めて」等と明示された場合は、確認せずに作成してよい。
 - 既存成果物の部分修正や、方針が明確な作業は、確認なしで進めてよい。
+- **情報の探索と外部ツールの利用**:
+  - 資料や情報の調査を依頼されたときは、まず \`sources/\` 配下の資料を最優先で調査すること。
+  - \`sources/\` 内に目的の情報が見当たらない場合、勝手に Confluence などの外部ツールを実行して補完せず、
+    「\`sources/\` には見当たりませんでした。Confluenceで検索しましょうか？」とチャットで提案し、指示を仰ぐこと。
+  - ユーザーから「Confluenceも探して」「外部も検索して」と明示された場合は、確認なしで実行してよい。
 
 ## このノートブックのルール
 
