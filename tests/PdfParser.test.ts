@@ -58,6 +58,39 @@ async function runTests() {
     assert.ok(emptyPageMarkdown.includes('*(テキストなし / スキャン画像または図)*'), 'プレースホルダーが含まれる');
     console.log('  -> OK: スキャン画像プレースホルダー正常');
 
+    // Test 5: pdfjs に渡される Uint8Array が独立したコピーであり、元の ArrayBuffer が detach されないことの検証
+    console.log('Test 5: pdfjs Worker 転送時の ArrayBuffer detach 防止（メモリクローン）検証');
+    let capturedData: any = null;
+    __setMockPdfJs({
+        getDocument: (params: any) => {
+            capturedData = params.data;
+            // 仮想的に渡された ArrayBuffer を変更またはシミュレート
+            return {
+                promise: Promise.resolve({
+                    numPages: 1,
+                    getPage: async () => ({
+                        getTextContent: async () => ({ items: [{ str: 'Detached-Proof Content' }] })
+                    })
+                })
+            };
+        }
+    });
+
+    const testOriginalBuffer = Buffer.from('%PDF-1.4 test detach prevention buffer');
+    const originalArrayBuffer = testOriginalBuffer.buffer;
+    const originalByteLength = testOriginalBuffer.length;
+
+    const detachProofMd = await PdfParser.parse(testOriginalBuffer, 'safe_buffer.pdf');
+    assert.ok(detachProofMd.includes('Detached-Proof Content'), 'コンテンツが抽出される');
+    assert.ok(capturedData instanceof Uint8Array, 'pdfjs に Uint8Array が渡されている');
+    assert.notStrictEqual(capturedData.buffer, originalArrayBuffer, 'pdfjs に渡された buffer は元の ArrayBuffer と別インスタンスであること（クローン保護）');
+    assert.strictEqual(testOriginalBuffer.length, originalByteLength, '元の Buffer の長さが保持されていること');
+    // 元の ArrayBuffer を使って新しく Uint8Array が構築可能であること（detach されていないことの証明）
+    assert.doesNotThrow(() => {
+        new Uint8Array(originalArrayBuffer);
+    }, '元の ArrayBuffer が detached になっていないこと');
+    console.log('  -> OK: メモリクローンにより元の ArrayBuffer が完全保護されていることを確認');
+
     // モックのリセット
     __setMockPdfJs(null);
 

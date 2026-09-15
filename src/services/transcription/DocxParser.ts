@@ -10,9 +10,17 @@ export class DocxParser {
             throw new Error('ファイルデータが空（0バイト）です。ファイルが正しく保存・同期されているか確認してください。');
         }
         
+        // Node.js (lib/unzip.js) と ブラウザ/esbuildバンドル (browser/unzip.js) の両方に対応するため
+        // 独立した ArrayBuffer と Buffer の両方を options に渡す
+        const arrayBuffer = buffer.buffer.slice(
+            buffer.byteOffset,
+            buffer.byteOffset + buffer.byteLength
+        );
+        const options = { arrayBuffer, buffer };
+
         try {
             // Mammoth で Markdown への変換を試行 (mammoth.convertToMarkdown または convertToHtml)
-            const result = await (mammoth as any).convertToMarkdown({ buffer });
+            const result = await (mammoth as any).convertToMarkdown(options);
             const markdownBody = result.value || '';
             const messages = result.messages || [];
 
@@ -31,7 +39,7 @@ export class DocxParser {
         } catch (error: any) {
             // フォールバック: raw text 抽出
             try {
-                const rawResult = await (mammoth as any).extractRawText({ buffer });
+                const rawResult = await (mammoth as any).extractRawText(options);
                 return `# 📄 Word 解析データ: ${originalFilename}\n\n${rawResult.value || ''}`;
             } catch (fallbackError: any) {
                 throw new Error(`Word ファイルのパースに失敗しました: ${error.message}`);

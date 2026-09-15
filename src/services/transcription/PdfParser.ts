@@ -10,9 +10,14 @@ export class PdfParser {
             throw new Error(`PDFデータが空（0バイト）です: ${originalFilename}`);
         }
 
-        const uint8Array = Buffer.isBuffer(data)
+        // Worker への Transferable 転送でメインスレッド側の元 ArrayBuffer が detach (切断) されるのを防ぐため、
+        // 独立したメモリ領域にコピーを作成して pdfjs に渡す
+        const sourceView = Buffer.isBuffer(data)
             ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
             : new Uint8Array(data);
+
+        const copiedBytes = new Uint8Array(sourceView.byteLength);
+        copiedBytes.set(sourceView);
 
         let pdfjs: any;
         try {
@@ -25,7 +30,7 @@ export class PdfParser {
         let pdf: any;
         try {
             const loadingTask = pdfjs.getDocument({
-                data: uint8Array,
+                data: copiedBytes,
                 // Node.js テストや特定環境での cMap / フォント警告を抑制
                 isEvalSupported: false,
                 useSystemFonts: true

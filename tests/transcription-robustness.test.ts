@@ -74,6 +74,41 @@ async function runRobustnessTest() {
         console.log('  -> 正常系PPTX & ノート抽出: 合格');
     }
 
+    // 5. 正常系DOCX（Word文書）のパース検証
+    console.log('\nStep 5: 正常系DOCX（Word文書）のパース検証');
+    const normalDocxPath = path.join(fixturesDir, '05_要件定義書_非機能要件_サンプル.docx');
+    if (fs.existsSync(normalDocxPath)) {
+        const docxBuf = fs.readFileSync(normalDocxPath);
+        const { markdown, convertedFilename } = await TranscriptionService.transcribe(docxBuf, '05_要件定義書_非機能要件_サンプル.docx');
+        assert.strictEqual(convertedFilename, '05_要件定義書_非機能要件_サンプル.docx.md');
+        assert.ok(markdown.includes('# 📄 Word 解析データ: 05_要件定義書_非機能要件_サンプル.docx'), 'Word解析見出しが含まれること');
+        assert.ok(markdown.length > 50, 'Markdown本文が抽出されていること');
+        console.log('  -> 正常系DOCX抽出: 合格');
+    }
+
+    // 6. esbuild/ブラウザ環境（browser/unzip.js）互換性検証: mammothにarrayBufferが渡されていることの検証
+    console.log('\nStep 6: DocxParser の browser/unzip.js 互換性（arrayBuffer オプション）検証');
+    const mammoth = require('mammoth');
+    let capturedDocxOptions: any = null;
+    const origConvertToMarkdown = mammoth.convertToMarkdown;
+    mammoth.convertToMarkdown = async (opts: any) => {
+        capturedDocxOptions = opts;
+        return await origConvertToMarkdown.call(mammoth, opts);
+    };
+
+    try {
+        if (fs.existsSync(normalDocxPath)) {
+            const docxBuf = fs.readFileSync(normalDocxPath);
+            await DocxParser.parse(docxBuf, 'test_mammoth_opts.docx');
+            assert.ok(capturedDocxOptions, 'mammoth にオプションが渡されていること');
+            assert.ok(capturedDocxOptions.arrayBuffer instanceof ArrayBuffer, 'options.arrayBuffer が ArrayBuffer インスタンスであること（esbuild browser/unzip.js 互換）');
+            assert.ok(Buffer.isBuffer(capturedDocxOptions.buffer), 'options.buffer が Buffer インスタンスであること（Node lib/unzip.js 互換）');
+            console.log('  -> browser/unzip.js (arrayBuffer) & lib/unzip.js (buffer) 両対応オプション検証: 合格');
+        }
+    } finally {
+        mammoth.convertToMarkdown = origConvertToMarkdown;
+    }
+
     console.log('\n=== 全堅牢性・異常系テストに合格しました ===');
 }
 

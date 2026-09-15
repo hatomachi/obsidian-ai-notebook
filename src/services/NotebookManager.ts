@@ -1756,10 +1756,14 @@ export class NotebookManager {
                         'GitLab-Upload',
                         `原本バイナリを GitLab Uploads へオフロード中... (サーバー: ${gitlabServer?.name}, プロジェクト: ${gitlabProjectId})`
                     );
-                    offloadResult = await this.gitlabService!.uploadFile(buffer, fileName, {
-                        serverId: gitlabServer?.id,
-                        projectId: gitlabProjectId
-                    });
+                    try {
+                        offloadResult = await this.gitlabService!.uploadFile(buffer, fileName, {
+                            serverId: gitlabServer?.id,
+                            projectId: gitlabProjectId
+                        });
+                    } catch (uploadErr: any) {
+                        offloadResult = { success: false, error: uploadErr?.message || String(uploadErr) };
+                    }
                 }
 
                 if (offloadResult?.success && offloadResult.absoluteUrl) {
@@ -1780,21 +1784,25 @@ export class NotebookManager {
                     const resultFile = await this.safeCreateOrModify(mdPath, finalMarkdown);
 
                     // origin に GitLab Upload 情報を保存
-                    const originInfo: SourceOrigin = {
-                        connectorId: 'gitlab_upload',
-                        remoteUrl: offloadResult.absoluteUrl,
-                        remoteId: offloadResult.url || '',
-                        remoteVersion: `${buffer.length}`,
-                        lastSyncedAt: new Date().toISOString()
-                    };
-                    const originsMap = await this.readSourcesOrigins(id);
-                    originsMap[convertedFilename] = originInfo;
-                    originsMap[fileName] = originInfo;
-                    if (cleanSubfolder) {
-                        originsMap[`${cleanSubfolder}/${convertedFilename}`] = originInfo;
-                        originsMap[`${cleanSubfolder}/${fileName}`] = originInfo;
+                    try {
+                        const originInfo: SourceOrigin = {
+                            connectorId: 'gitlab_upload',
+                            remoteUrl: offloadResult.absoluteUrl,
+                            remoteId: offloadResult.url || '',
+                            remoteVersion: `${buffer.length}`,
+                            lastSyncedAt: new Date().toISOString()
+                        };
+                        const originsMap = await this.readSourcesOrigins(id);
+                        originsMap[convertedFilename] = originInfo;
+                        originsMap[fileName] = originInfo;
+                        if (cleanSubfolder) {
+                            originsMap[`${cleanSubfolder}/${convertedFilename}`] = originInfo;
+                            originsMap[`${cleanSubfolder}/${fileName}`] = originInfo;
+                        }
+                        await this.saveSourcesOrigins(id, originsMap);
+                    } catch (originErr: any) {
+                        console.warn(`[AI Notebook] ⚠️ GitLab Upload origin情報の保存に失敗:`, originErr);
                     }
-                    await this.saveSourcesOrigins(id, originsMap);
 
                     return {
                         file: resultFile,
@@ -1818,24 +1826,29 @@ export class NotebookManager {
                 const resultFile = await this.safeCreateOrModify(mdPath, markdown);
 
                 // 原本バイナリを sources/.cache/[subfolder/] 配下に保存（差分検知や再同期用）
-                const cacheDir = cleanSubfolder
-                    ? normalizePath(`${sourcesDir}/.cache/${cleanSubfolder}`)
-                    : normalizePath(`${sourcesDir}/.cache`);
-                await this.ensureFolder(cacheDir);
-                const rawPath = normalizePath(`${cacheDir}/${fileName}`);
+                try {
+                    const cacheDir = cleanSubfolder
+                        ? normalizePath(`${sourcesDir}/.cache/${cleanSubfolder}`)
+                        : normalizePath(`${sourcesDir}/.cache`);
+                    await this.ensureFolder(cacheDir);
+                    const rawPath = normalizePath(`${cacheDir}/${fileName}`);
 
-                if (typeof data === 'string') {
-                    await this.safeCreateOrModify(rawPath, data);
-                } else {
-                    await this.safeCreateOrModifyBinary(rawPath, toArrayBuffer(data));
+                    if (typeof data === 'string') {
+                        await this.safeCreateOrModify(rawPath, data);
+                    } else {
+                        await this.safeCreateOrModifyBinary(rawPath, toArrayBuffer(data));
+                    }
+
+                    DebugFolderHelper.logPipelineStep(
+                        fileName, 
+                        5, 
+                        'Save', 
+                        `Markdown保存完了: ${convertedFilename} (原本は .cache/${cleanSubfolder ? cleanSubfolder + '/' : ''}${fileName} にバックアップ)`
+                    );
+                } catch (cacheErr: any) {
+                    DebugFolderHelper.logPipelineError(fileName, 5, 'Cache-Backup-Warning', cacheErr);
+                    console.warn(`[AI Notebook] ⚠️ 原本バイナリの .cache/ 保存に失敗しましたがMarkdownは保持されます:`, cacheErr);
                 }
-
-                DebugFolderHelper.logPipelineStep(
-                    fileName, 
-                    5, 
-                    'Save', 
-                    `Markdown保存完了: ${convertedFilename} (原本は .cache/${cleanSubfolder ? cleanSubfolder + '/' : ''}${fileName} にバックアップ)`
-                );
 
                 return {
                     file: resultFile,
